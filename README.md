@@ -17,7 +17,7 @@ To build this thing you need:
 * A usb cable connect the Teensy2.0 board with your PC, choose the length fits you.
 
 Build steps:
-* print each parts under [directory](3D_print_parts), you need to print the following pieces:
+* print each parts under [directory 3D_print_parts](3D_print_parts), you need to print the following pieces:
     * a base
     * a lid
     * a mask
