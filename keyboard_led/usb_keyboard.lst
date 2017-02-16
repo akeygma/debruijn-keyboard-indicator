@@ -1,0 +1,1981 @@
+   1               		.file	"usb_keyboard.c"
+   2               	__SP_H__ = 0x3e
+   3               	__SP_L__ = 0x3d
+   4               	__SREG__ = 0x3f
+   5               	__tmp_reg__ = 0
+   6               	__zero_reg__ = 1
+   7               		.text
+   8               	.Ltext0:
+   9               		.cfi_sections	.debug_frame
+  10               		.section	.text.usb_wait_in_ready,"ax",@progbits
+  12               	usb_wait_in_ready:
+  13               	.LFB6:
+  14               		.file 1 "usb_keyboard.c"
+   1:usb_keyboard.c **** /* USB Keyboard Example for Teensy USB Development Board
+   2:usb_keyboard.c ****  * http://www.pjrc.com/teensy/usb_keyboard.html
+   3:usb_keyboard.c ****  * Copyright (c) 2009 PJRC.COM, LLC
+   4:usb_keyboard.c ****  * 
+   5:usb_keyboard.c ****  * Permission is hereby granted, free of charge, to any person obtaining a copy
+   6:usb_keyboard.c ****  * of this software and associated documentation files (the "Software"), to deal
+   7:usb_keyboard.c ****  * in the Software without restriction, including without limitation the rights
+   8:usb_keyboard.c ****  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   9:usb_keyboard.c ****  * copies of the Software, and to permit persons to whom the Software is
+  10:usb_keyboard.c ****  * furnished to do so, subject to the following conditions:
+  11:usb_keyboard.c ****  * 
+  12:usb_keyboard.c ****  * The above copyright notice and this permission notice shall be included in
+  13:usb_keyboard.c ****  * all copies or substantial portions of the Software.
+  14:usb_keyboard.c ****  * 
+  15:usb_keyboard.c ****  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  16:usb_keyboard.c ****  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  17:usb_keyboard.c ****  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  18:usb_keyboard.c ****  * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  19:usb_keyboard.c ****  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  20:usb_keyboard.c ****  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+  21:usb_keyboard.c ****  * THE SOFTWARE.
+  22:usb_keyboard.c ****  */
+  23:usb_keyboard.c **** 
+  24:usb_keyboard.c **** // Version 1.0: Initial Release
+  25:usb_keyboard.c **** // Version 1.1: Add support for Teensy 2.0
+  26:usb_keyboard.c **** 
+  27:usb_keyboard.c **** #define USB_SERIAL_PRIVATE_INCLUDE
+  28:usb_keyboard.c **** #include "usb_keyboard.h"
+  29:usb_keyboard.c **** 
+  30:usb_keyboard.c **** /**************************************************************************
+  31:usb_keyboard.c ****  *
+  32:usb_keyboard.c ****  *  Configurable Options
+  33:usb_keyboard.c ****  *
+  34:usb_keyboard.c ****  **************************************************************************/
+  35:usb_keyboard.c **** 
+  36:usb_keyboard.c **** // You can change these to give your code its own name.
+  37:usb_keyboard.c **** #define STR_MANUFACTURER	L"MfgName"
+  38:usb_keyboard.c **** #define STR_PRODUCT		L"Keyboard"
+  39:usb_keyboard.c **** 
+  40:usb_keyboard.c **** 
+  41:usb_keyboard.c **** // Mac OS-X and Linux automatically load the correct drivers.  On
+  42:usb_keyboard.c **** // Windows, even though the driver is supplied by Microsoft, an
+  43:usb_keyboard.c **** // INF file is needed to load the driver.  These numbers need to
+  44:usb_keyboard.c **** // match the INF file.
+  45:usb_keyboard.c **** #define VENDOR_ID		0x16C0
+  46:usb_keyboard.c **** #define PRODUCT_ID		0x047C
+  47:usb_keyboard.c **** 
+  48:usb_keyboard.c **** 
+  49:usb_keyboard.c **** // USB devices are supposed to implment a halt feature, which is
+  50:usb_keyboard.c **** // rarely (if ever) used.  If you comment this line out, the halt
+  51:usb_keyboard.c **** // code will be removed, saving 102 bytes of space (gcc 4.3.0).
+  52:usb_keyboard.c **** // This is not strictly USB compliant, but works with all major
+  53:usb_keyboard.c **** // operating systems.
+  54:usb_keyboard.c **** #define SUPPORT_ENDPOINT_HALT
+  55:usb_keyboard.c **** 
+  56:usb_keyboard.c **** 
+  57:usb_keyboard.c **** 
+  58:usb_keyboard.c **** /**************************************************************************
+  59:usb_keyboard.c ****  *
+  60:usb_keyboard.c ****  *  Endpoint Buffer Configuration
+  61:usb_keyboard.c ****  *
+  62:usb_keyboard.c ****  **************************************************************************/
+  63:usb_keyboard.c **** 
+  64:usb_keyboard.c **** #define ENDPOINT0_SIZE		32
+  65:usb_keyboard.c **** 
+  66:usb_keyboard.c **** #define KEYBOARD_INTERFACE	0
+  67:usb_keyboard.c **** #define KEYBOARD_ENDPOINT	3
+  68:usb_keyboard.c **** #define KEYBOARD_SIZE		8
+  69:usb_keyboard.c **** #define KEYBOARD_BUFFER		EP_DOUBLE_BUFFER
+  70:usb_keyboard.c **** 
+  71:usb_keyboard.c **** static const uint8_t PROGMEM endpoint_config_table[] = {
+  72:usb_keyboard.c **** 	0,
+  73:usb_keyboard.c **** 	0,
+  74:usb_keyboard.c **** 	1, EP_TYPE_INTERRUPT_IN,  EP_SIZE(KEYBOARD_SIZE) | KEYBOARD_BUFFER,
+  75:usb_keyboard.c **** 	0
+  76:usb_keyboard.c **** };
+  77:usb_keyboard.c **** 
+  78:usb_keyboard.c **** 
+  79:usb_keyboard.c **** /**************************************************************************
+  80:usb_keyboard.c ****  *
+  81:usb_keyboard.c ****  *  Descriptor Data
+  82:usb_keyboard.c ****  *
+  83:usb_keyboard.c ****  **************************************************************************/
+  84:usb_keyboard.c **** 
+  85:usb_keyboard.c **** // Descriptors are the data that your computer reads when it auto-detects
+  86:usb_keyboard.c **** // this USB device (called "enumeration" in USB lingo).  The most commonly
+  87:usb_keyboard.c **** // changed items are editable at the top of this file.  Changing things
+  88:usb_keyboard.c **** // in here should only be done by those who've read chapter 9 of the USB
+  89:usb_keyboard.c **** // spec and relevant portions of any USB class specifications!
+  90:usb_keyboard.c **** 
+  91:usb_keyboard.c **** 
+  92:usb_keyboard.c **** const static uint8_t PROGMEM device_descriptor[] = {
+  93:usb_keyboard.c **** 	18,					// bLength
+  94:usb_keyboard.c **** 	1,					// bDescriptorType
+  95:usb_keyboard.c **** 	0x00, 0x02,				// bcdUSB
+  96:usb_keyboard.c **** 	0,					// bDeviceClass
+  97:usb_keyboard.c **** 	0,					// bDeviceSubClass
+  98:usb_keyboard.c **** 	0,					// bDeviceProtocol
+  99:usb_keyboard.c **** 	ENDPOINT0_SIZE,				// bMaxPacketSize0
+ 100:usb_keyboard.c **** 	LSB(VENDOR_ID), MSB(VENDOR_ID),		// idVendor
+ 101:usb_keyboard.c **** 	LSB(PRODUCT_ID), MSB(PRODUCT_ID),	// idProduct
+ 102:usb_keyboard.c **** 	0x00, 0x01,				// bcdDevice
+ 103:usb_keyboard.c **** 	1,					// iManufacturer
+ 104:usb_keyboard.c **** 	2,					// iProduct
+ 105:usb_keyboard.c **** 	0,					// iSerialNumber
+ 106:usb_keyboard.c **** 	1					// bNumConfigurations
+ 107:usb_keyboard.c **** };
+ 108:usb_keyboard.c **** 
+ 109:usb_keyboard.c **** // Keyboard Protocol 1, HID 1.11 spec, Appendix B, page 59-60
+ 110:usb_keyboard.c **** const static uint8_t PROGMEM keyboard_hid_report_desc[] = {
+ 111:usb_keyboard.c ****         0x05, 0x01,          // Usage Page (Generic Desktop),
+ 112:usb_keyboard.c ****         0x09, 0x06,          // Usage (Keyboard),
+ 113:usb_keyboard.c ****         0xA1, 0x01,          // Collection (Application),
+ 114:usb_keyboard.c ****         0x75, 0x01,          //   Report Size (1),
+ 115:usb_keyboard.c ****         0x95, 0x08,          //   Report Count (8),
+ 116:usb_keyboard.c ****         0x05, 0x07,          //   Usage Page (Key Codes),
+ 117:usb_keyboard.c ****         0x19, 0xE0,          //   Usage Minimum (224),
+ 118:usb_keyboard.c ****         0x29, 0xE7,          //   Usage Maximum (231),
+ 119:usb_keyboard.c ****         0x15, 0x00,          //   Logical Minimum (0),
+ 120:usb_keyboard.c ****         0x25, 0x01,          //   Logical Maximum (1),
+ 121:usb_keyboard.c ****         0x81, 0x02,          //   Input (Data, Variable, Absolute), ;Modifier byte
+ 122:usb_keyboard.c ****         0x95, 0x01,          //   Report Count (1),
+ 123:usb_keyboard.c ****         0x75, 0x08,          //   Report Size (8),
+ 124:usb_keyboard.c ****         0x81, 0x03,          //   Input (Constant),                 ;Reserved byte
+ 125:usb_keyboard.c ****         0x95, 0x05,          //   Report Count (5),
+ 126:usb_keyboard.c ****         0x75, 0x01,          //   Report Size (1),
+ 127:usb_keyboard.c ****         0x05, 0x08,          //   Usage Page (LEDs),
+ 128:usb_keyboard.c ****         0x19, 0x01,          //   Usage Minimum (1),
+ 129:usb_keyboard.c ****         0x29, 0x05,          //   Usage Maximum (5),
+ 130:usb_keyboard.c ****         0x91, 0x02,          //   Output (Data, Variable, Absolute), ;LED report
+ 131:usb_keyboard.c ****         0x95, 0x01,          //   Report Count (1),
+ 132:usb_keyboard.c ****         0x75, 0x03,          //   Report Size (3),
+ 133:usb_keyboard.c ****         0x91, 0x03,          //   Output (Constant),                 ;LED report padding
+ 134:usb_keyboard.c ****         0x95, 0x06,          //   Report Count (6),
+ 135:usb_keyboard.c ****         0x75, 0x08,          //   Report Size (8),
+ 136:usb_keyboard.c ****         0x15, 0x00,          //   Logical Minimum (0),
+ 137:usb_keyboard.c ****         0x25, 0x68,          //   Logical Maximum(104),
+ 138:usb_keyboard.c ****         0x05, 0x07,          //   Usage Page (Key Codes),
+ 139:usb_keyboard.c ****         0x19, 0x00,          //   Usage Minimum (0),
+ 140:usb_keyboard.c ****         0x29, 0x68,          //   Usage Maximum (104),
+ 141:usb_keyboard.c ****         0x81, 0x00,          //   Input (Data, Array),
+ 142:usb_keyboard.c ****         0xc0                 // End Collection
+ 143:usb_keyboard.c **** };
+ 144:usb_keyboard.c **** 
+ 145:usb_keyboard.c **** #define CONFIG1_DESC_SIZE        (9+9+9+7)
+ 146:usb_keyboard.c **** #define KEYBOARD_HID_DESC_OFFSET (9+9)
+ 147:usb_keyboard.c **** const static uint8_t PROGMEM config1_descriptor[CONFIG1_DESC_SIZE] = {
+ 148:usb_keyboard.c **** 	// configuration descriptor, USB spec 9.6.3, page 264-266, Table 9-10
+ 149:usb_keyboard.c **** 	9, 					// bLength;
+ 150:usb_keyboard.c **** 	2,					// bDescriptorType;
+ 151:usb_keyboard.c **** 	LSB(CONFIG1_DESC_SIZE),			// wTotalLength
+ 152:usb_keyboard.c **** 	MSB(CONFIG1_DESC_SIZE),
+ 153:usb_keyboard.c **** 	1,					// bNumInterfaces
+ 154:usb_keyboard.c **** 	1,					// bConfigurationValue
+ 155:usb_keyboard.c **** 	0,					// iConfiguration
+ 156:usb_keyboard.c **** 	0xC0,					// bmAttributes
+ 157:usb_keyboard.c **** 	50,					// bMaxPower
+ 158:usb_keyboard.c **** 	// interface descriptor, USB spec 9.6.5, page 267-269, Table 9-12
+ 159:usb_keyboard.c **** 	9,					// bLength
+ 160:usb_keyboard.c **** 	4,					// bDescriptorType
+ 161:usb_keyboard.c **** 	KEYBOARD_INTERFACE,			// bInterfaceNumber
+ 162:usb_keyboard.c **** 	0,					// bAlternateSetting
+ 163:usb_keyboard.c **** 	1,					// bNumEndpoints
+ 164:usb_keyboard.c **** 	0x03,					// bInterfaceClass (0x03 = HID)
+ 165:usb_keyboard.c **** 	0x01,					// bInterfaceSubClass (0x01 = Boot)
+ 166:usb_keyboard.c **** 	0x01,					// bInterfaceProtocol (0x01 = Keyboard)
+ 167:usb_keyboard.c **** 	0,					// iInterface
+ 168:usb_keyboard.c **** 	// HID interface descriptor, HID 1.11 spec, section 6.2.1
+ 169:usb_keyboard.c **** 	9,					// bLength
+ 170:usb_keyboard.c **** 	0x21,					// bDescriptorType
+ 171:usb_keyboard.c **** 	0x11, 0x01,				// bcdHID
+ 172:usb_keyboard.c **** 	0,					// bCountryCode
+ 173:usb_keyboard.c **** 	1,					// bNumDescriptors
+ 174:usb_keyboard.c **** 	0x22,					// bDescriptorType
+ 175:usb_keyboard.c **** 	sizeof(keyboard_hid_report_desc),	// wDescriptorLength
+ 176:usb_keyboard.c **** 	0,
+ 177:usb_keyboard.c **** 	// endpoint descriptor, USB spec 9.6.6, page 269-271, Table 9-13
+ 178:usb_keyboard.c **** 	7,					// bLength
+ 179:usb_keyboard.c **** 	5,					// bDescriptorType
+ 180:usb_keyboard.c **** 	KEYBOARD_ENDPOINT | 0x80,		// bEndpointAddress
+ 181:usb_keyboard.c **** 	0x03,					// bmAttributes (0x03=intr)
+ 182:usb_keyboard.c **** 	KEYBOARD_SIZE, 0,			// wMaxPacketSize
+ 183:usb_keyboard.c **** 	1					// bInterval
+ 184:usb_keyboard.c **** };
+ 185:usb_keyboard.c **** 
+ 186:usb_keyboard.c **** // If you're desperate for a little extra code memory, these strings
+ 187:usb_keyboard.c **** // can be completely removed if iManufacturer, iProduct, iSerialNumber
+ 188:usb_keyboard.c **** // in the device desciptor are changed to zeros.
+ 189:usb_keyboard.c **** struct usb_string_descriptor_struct {
+ 190:usb_keyboard.c **** 	uint8_t bLength;
+ 191:usb_keyboard.c **** 	uint8_t bDescriptorType;
+ 192:usb_keyboard.c **** 	int16_t wString[];
+ 193:usb_keyboard.c **** };
+ 194:usb_keyboard.c **** const static struct usb_string_descriptor_struct PROGMEM string0 = {
+ 195:usb_keyboard.c **** 	4,
+ 196:usb_keyboard.c **** 	3,
+ 197:usb_keyboard.c **** 	{0x0409}
+ 198:usb_keyboard.c **** };
+ 199:usb_keyboard.c **** const static struct usb_string_descriptor_struct PROGMEM string1 = {
+ 200:usb_keyboard.c **** 	sizeof(STR_MANUFACTURER),
+ 201:usb_keyboard.c **** 	3,
+ 202:usb_keyboard.c **** 	STR_MANUFACTURER
+ 203:usb_keyboard.c **** };
+ 204:usb_keyboard.c **** const static struct usb_string_descriptor_struct PROGMEM string2 = {
+ 205:usb_keyboard.c **** 	sizeof(STR_PRODUCT),
+ 206:usb_keyboard.c **** 	3,
+ 207:usb_keyboard.c **** 	STR_PRODUCT
+ 208:usb_keyboard.c **** };
+ 209:usb_keyboard.c **** 
+ 210:usb_keyboard.c **** // This table defines which descriptor data is sent for each specific
+ 211:usb_keyboard.c **** // request from the host (in wValue and wIndex).
+ 212:usb_keyboard.c **** const static struct descriptor_list_struct {
+ 213:usb_keyboard.c **** 	uint16_t	wValue;
+ 214:usb_keyboard.c **** 	uint16_t	wIndex;
+ 215:usb_keyboard.c **** 	const uint8_t	*addr;
+ 216:usb_keyboard.c **** 	uint8_t		length;
+ 217:usb_keyboard.c **** } PROGMEM descriptor_list[] = {
+ 218:usb_keyboard.c **** 	{0x0100, 0x0000, device_descriptor, sizeof(device_descriptor)},
+ 219:usb_keyboard.c **** 	{0x0200, 0x0000, config1_descriptor, sizeof(config1_descriptor)},
+ 220:usb_keyboard.c **** 	{0x2200, KEYBOARD_INTERFACE, keyboard_hid_report_desc, sizeof(keyboard_hid_report_desc)},
+ 221:usb_keyboard.c **** 	{0x2100, KEYBOARD_INTERFACE, config1_descriptor+KEYBOARD_HID_DESC_OFFSET, 9},
+ 222:usb_keyboard.c **** 	{0x0300, 0x0000, (const uint8_t *)&string0, 4},
+ 223:usb_keyboard.c **** 	{0x0301, 0x0409, (const uint8_t *)&string1, sizeof(STR_MANUFACTURER)},
+ 224:usb_keyboard.c **** 	{0x0302, 0x0409, (const uint8_t *)&string2, sizeof(STR_PRODUCT)}
+ 225:usb_keyboard.c **** };
+ 226:usb_keyboard.c **** #define NUM_DESC_LIST (sizeof(descriptor_list)/sizeof(struct descriptor_list_struct))
+ 227:usb_keyboard.c **** 
+ 228:usb_keyboard.c **** 
+ 229:usb_keyboard.c **** /**************************************************************************
+ 230:usb_keyboard.c ****  *
+ 231:usb_keyboard.c ****  *  Variables - these are the only non-stack RAM usage
+ 232:usb_keyboard.c ****  *
+ 233:usb_keyboard.c ****  **************************************************************************/
+ 234:usb_keyboard.c **** 
+ 235:usb_keyboard.c **** // zero when we are not configured, non-zero when enumerated
+ 236:usb_keyboard.c **** static volatile uint8_t usb_configuration=0;
+ 237:usb_keyboard.c **** 
+ 238:usb_keyboard.c **** // which modifier keys are currently pressed
+ 239:usb_keyboard.c **** // 1=left ctrl,    2=left shift,   4=left alt,    8=left gui
+ 240:usb_keyboard.c **** // 16=right ctrl, 32=right shift, 64=right alt, 128=right gui
+ 241:usb_keyboard.c **** uint8_t keyboard_modifier_keys=0;
+ 242:usb_keyboard.c **** 
+ 243:usb_keyboard.c **** // which keys are currently pressed, up to 6 keys may be down at once
+ 244:usb_keyboard.c **** uint8_t keyboard_keys[6]={0,0,0,0,0,0};
+ 245:usb_keyboard.c **** 
+ 246:usb_keyboard.c **** // protocol setting from the host.  We use exactly the same report
+ 247:usb_keyboard.c **** // either way, so this variable only stores the setting since we
+ 248:usb_keyboard.c **** // are required to be able to report which setting is in use.
+ 249:usb_keyboard.c **** static uint8_t keyboard_protocol=1;
+ 250:usb_keyboard.c **** 
+ 251:usb_keyboard.c **** // the idle configuration, how often we send the report to the
+ 252:usb_keyboard.c **** // host (ms * 4) even when it hasn't changed
+ 253:usb_keyboard.c **** static uint8_t keyboard_idle_config=125;
+ 254:usb_keyboard.c **** 
+ 255:usb_keyboard.c **** // count until idle timeout
+ 256:usb_keyboard.c **** static uint8_t keyboard_idle_count=0;
+ 257:usb_keyboard.c **** 
+ 258:usb_keyboard.c **** // 1=num lock, 2=caps lock, 4=scroll lock, 8=compose, 16=kana
+ 259:usb_keyboard.c **** volatile uint8_t keyboard_leds=0;
+ 260:usb_keyboard.c **** 
+ 261:usb_keyboard.c **** 
+ 262:usb_keyboard.c **** /**************************************************************************
+ 263:usb_keyboard.c ****  *
+ 264:usb_keyboard.c ****  *  Public Functions - these are the API intended for the user
+ 265:usb_keyboard.c ****  *
+ 266:usb_keyboard.c ****  **************************************************************************/
+ 267:usb_keyboard.c **** 
+ 268:usb_keyboard.c **** 
+ 269:usb_keyboard.c **** // initialize USB
+ 270:usb_keyboard.c **** void usb_init(void)
+ 271:usb_keyboard.c **** {
+ 272:usb_keyboard.c **** 	HW_CONFIG();
+ 273:usb_keyboard.c **** 	USB_FREEZE();	// enable USB
+ 274:usb_keyboard.c **** 	PLL_CONFIG();				// config PLL
+ 275:usb_keyboard.c ****         while (!(PLLCSR & (1<<PLOCK))) ;	// wait for PLL lock
+ 276:usb_keyboard.c ****         USB_CONFIG();				// start USB clock
+ 277:usb_keyboard.c ****         UDCON = 0;				// enable attach resistor
+ 278:usb_keyboard.c **** 	usb_configuration = 0;
+ 279:usb_keyboard.c ****         UDIEN = (1<<EORSTE)|(1<<SOFE);
+ 280:usb_keyboard.c **** 	sei();
+ 281:usb_keyboard.c **** }
+ 282:usb_keyboard.c **** 
+ 283:usb_keyboard.c **** // return 0 if the USB is not configured, or the configuration
+ 284:usb_keyboard.c **** // number selected by the HOST
+ 285:usb_keyboard.c **** uint8_t usb_configured(void)
+ 286:usb_keyboard.c **** {
+ 287:usb_keyboard.c **** 	return usb_configuration;
+ 288:usb_keyboard.c **** }
+ 289:usb_keyboard.c **** 
+ 290:usb_keyboard.c **** 
+ 291:usb_keyboard.c **** // perform a single keystroke
+ 292:usb_keyboard.c **** int8_t usb_keyboard_press(uint8_t key, uint8_t modifier)
+ 293:usb_keyboard.c **** {
+ 294:usb_keyboard.c **** 	int8_t r;
+ 295:usb_keyboard.c **** 
+ 296:usb_keyboard.c **** 	keyboard_modifier_keys = modifier;
+ 297:usb_keyboard.c **** 	keyboard_keys[0] = key;
+ 298:usb_keyboard.c **** 	r = usb_keyboard_send();
+ 299:usb_keyboard.c **** 	if (r) return r;
+ 300:usb_keyboard.c **** 	keyboard_modifier_keys = 0;
+ 301:usb_keyboard.c **** 	keyboard_keys[0] = 0;
+ 302:usb_keyboard.c **** 	return usb_keyboard_send();
+ 303:usb_keyboard.c **** }
+ 304:usb_keyboard.c **** 
+ 305:usb_keyboard.c **** // send the contents of keyboard_keys and keyboard_modifier_keys
+ 306:usb_keyboard.c **** int8_t usb_keyboard_send(void)
+ 307:usb_keyboard.c **** {
+ 308:usb_keyboard.c **** 	uint8_t i, intr_state, timeout;
+ 309:usb_keyboard.c **** 
+ 310:usb_keyboard.c **** 	if (!usb_configuration) return -1;
+ 311:usb_keyboard.c **** 	intr_state = SREG;
+ 312:usb_keyboard.c **** 	cli();
+ 313:usb_keyboard.c **** 	UENUM = KEYBOARD_ENDPOINT;
+ 314:usb_keyboard.c **** 	timeout = UDFNUML + 50;
+ 315:usb_keyboard.c **** 	while (1) {
+ 316:usb_keyboard.c **** 		// are we ready to transmit?
+ 317:usb_keyboard.c **** 		if (UEINTX & (1<<RWAL)) break;
+ 318:usb_keyboard.c **** 		SREG = intr_state;
+ 319:usb_keyboard.c **** 		// has the USB gone offline?
+ 320:usb_keyboard.c **** 		if (!usb_configuration) return -1;
+ 321:usb_keyboard.c **** 		// have we waited too long?
+ 322:usb_keyboard.c **** 		if (UDFNUML == timeout) return -1;
+ 323:usb_keyboard.c **** 		// get ready to try checking again
+ 324:usb_keyboard.c **** 		intr_state = SREG;
+ 325:usb_keyboard.c **** 		cli();
+ 326:usb_keyboard.c **** 		UENUM = KEYBOARD_ENDPOINT;
+ 327:usb_keyboard.c **** 	}
+ 328:usb_keyboard.c **** 	UEDATX = keyboard_modifier_keys;
+ 329:usb_keyboard.c **** 	UEDATX = 0;
+ 330:usb_keyboard.c **** 	for (i=0; i<6; i++) {
+ 331:usb_keyboard.c **** 		UEDATX = keyboard_keys[i];
+ 332:usb_keyboard.c **** 	}
+ 333:usb_keyboard.c **** 	UEINTX = 0x3A;
+ 334:usb_keyboard.c **** 	keyboard_idle_count = 0;
+ 335:usb_keyboard.c **** 	SREG = intr_state;
+ 336:usb_keyboard.c **** 	return 0;
+ 337:usb_keyboard.c **** }
+ 338:usb_keyboard.c **** 
+ 339:usb_keyboard.c **** /**************************************************************************
+ 340:usb_keyboard.c ****  *
+ 341:usb_keyboard.c ****  *  Private Functions - not intended for general user consumption....
+ 342:usb_keyboard.c ****  *
+ 343:usb_keyboard.c ****  **************************************************************************/
+ 344:usb_keyboard.c **** 
+ 345:usb_keyboard.c **** 
+ 346:usb_keyboard.c **** 
+ 347:usb_keyboard.c **** // USB Device Interrupt - handle all device-level events
+ 348:usb_keyboard.c **** // the transmit buffer flushing is triggered by the start of frame
+ 349:usb_keyboard.c **** //
+ 350:usb_keyboard.c **** ISR(USB_GEN_vect)
+ 351:usb_keyboard.c **** {
+ 352:usb_keyboard.c **** 	uint8_t intbits, i;
+ 353:usb_keyboard.c **** 	static uint8_t div4=0;
+ 354:usb_keyboard.c **** 
+ 355:usb_keyboard.c ****         intbits = UDINT;
+ 356:usb_keyboard.c ****         UDINT = 0;
+ 357:usb_keyboard.c ****         if (intbits & (1<<EORSTI)) {
+ 358:usb_keyboard.c **** 		UENUM = 0;
+ 359:usb_keyboard.c **** 		UECONX = 1;
+ 360:usb_keyboard.c **** 		UECFG0X = EP_TYPE_CONTROL;
+ 361:usb_keyboard.c **** 		UECFG1X = EP_SIZE(ENDPOINT0_SIZE) | EP_SINGLE_BUFFER;
+ 362:usb_keyboard.c **** 		UEIENX = (1<<RXSTPE);
+ 363:usb_keyboard.c **** 		usb_configuration = 0;
+ 364:usb_keyboard.c ****         }
+ 365:usb_keyboard.c **** 	if ((intbits & (1<<SOFI)) && usb_configuration) {
+ 366:usb_keyboard.c **** 		if (keyboard_idle_config && (++div4 & 3) == 0) {
+ 367:usb_keyboard.c **** 			UENUM = KEYBOARD_ENDPOINT;
+ 368:usb_keyboard.c **** 			if (UEINTX & (1<<RWAL)) {
+ 369:usb_keyboard.c **** 				keyboard_idle_count++;
+ 370:usb_keyboard.c **** 				if (keyboard_idle_count == keyboard_idle_config) {
+ 371:usb_keyboard.c **** 					keyboard_idle_count = 0;
+ 372:usb_keyboard.c **** 					UEDATX = keyboard_modifier_keys;
+ 373:usb_keyboard.c **** 					UEDATX = 0;
+ 374:usb_keyboard.c **** 					for (i=0; i<6; i++) {
+ 375:usb_keyboard.c **** 						UEDATX = keyboard_keys[i];
+ 376:usb_keyboard.c **** 					}
+ 377:usb_keyboard.c **** 					UEINTX = 0x3A;
+ 378:usb_keyboard.c **** 				}
+ 379:usb_keyboard.c **** 			}
+ 380:usb_keyboard.c **** 		}
+ 381:usb_keyboard.c **** 	}
+ 382:usb_keyboard.c **** }
+ 383:usb_keyboard.c **** 
+ 384:usb_keyboard.c **** 
+ 385:usb_keyboard.c **** 
+ 386:usb_keyboard.c **** // Misc functions to wait for ready and send/receive packets
+ 387:usb_keyboard.c **** static inline void usb_wait_in_ready(void)
+ 388:usb_keyboard.c **** {
+  15               		.loc 1 388 0
+  16               		.cfi_startproc
+  17               	/* prologue: function */
+  18               	/* frame size = 0 */
+  19               	/* stack size = 0 */
+  20               	.L__stack_usage = 0
+  21               	.L2:
+ 389:usb_keyboard.c **** 	while (!(UEINTX & (1<<TXINI))) ;
+  22               		.loc 1 389 0 discriminator 1
+  23 0000 8091 E800 		lds r24,232
+  24 0004 80FF      		sbrs r24,0
+  25 0006 00C0      		rjmp .L2
+  26               	/* epilogue start */
+ 390:usb_keyboard.c **** }
+  27               		.loc 1 390 0
+  28 0008 0895      		ret
+  29               		.cfi_endproc
+  30               	.LFE6:
+  32               		.section	.text.usb_init,"ax",@progbits
+  33               	.global	usb_init
+  35               	usb_init:
+  36               	.LFB1:
+ 271:usb_keyboard.c **** 	HW_CONFIG();
+  37               		.loc 1 271 0
+  38               		.cfi_startproc
+  39               	/* prologue: function */
+  40               	/* frame size = 0 */
+  41               	/* stack size = 0 */
+  42               	.L__stack_usage = 0
+ 272:usb_keyboard.c **** 	USB_FREEZE();	// enable USB
+  43               		.loc 1 272 0
+  44 0000 81E0      		ldi r24,lo8(1)
+  45 0002 8093 D700 		sts 215,r24
+ 273:usb_keyboard.c **** 	PLL_CONFIG();				// config PLL
+  46               		.loc 1 273 0
+  47 0006 80EA      		ldi r24,lo8(-96)
+  48 0008 8093 D800 		sts 216,r24
+ 274:usb_keyboard.c ****         while (!(PLLCSR & (1<<PLOCK))) ;	// wait for PLL lock
+  49               		.loc 1 274 0
+  50 000c 82E1      		ldi r24,lo8(18)
+  51 000e 89BD      		out 0x29,r24
+  52               	.L7:
+ 275:usb_keyboard.c ****         USB_CONFIG();				// start USB clock
+  53               		.loc 1 275 0 discriminator 1
+  54 0010 09B4      		in __tmp_reg__,0x29
+  55 0012 00FE      		sbrs __tmp_reg__,0
+  56 0014 00C0      		rjmp .L7
+ 276:usb_keyboard.c ****         UDCON = 0;				// enable attach resistor
+  57               		.loc 1 276 0
+  58 0016 80E9      		ldi r24,lo8(-112)
+  59 0018 8093 D800 		sts 216,r24
+ 277:usb_keyboard.c **** 	usb_configuration = 0;
+  60               		.loc 1 277 0
+  61 001c 1092 E000 		sts 224,__zero_reg__
+ 278:usb_keyboard.c ****         UDIEN = (1<<EORSTE)|(1<<SOFE);
+  62               		.loc 1 278 0
+  63 0020 1092 0000 		sts usb_configuration,__zero_reg__
+ 279:usb_keyboard.c **** 	sei();
+  64               		.loc 1 279 0
+  65 0024 8CE0      		ldi r24,lo8(12)
+  66 0026 8093 E200 		sts 226,r24
+ 280:usb_keyboard.c **** }
+  67               		.loc 1 280 0
+  68               	/* #APP */
+  69               	 ;  280 "usb_keyboard.c" 1
+  70 002a 7894      		sei
+  71               	 ;  0 "" 2
+  72               	/* #NOAPP */
+  73 002c 0895      		ret
+  74               		.cfi_endproc
+  75               	.LFE1:
+  77               		.section	.text.usb_configured,"ax",@progbits
+  78               	.global	usb_configured
+  80               	usb_configured:
+  81               	.LFB2:
+ 286:usb_keyboard.c **** 	return usb_configuration;
+  82               		.loc 1 286 0
+  83               		.cfi_startproc
+  84               	/* prologue: function */
+  85               	/* frame size = 0 */
+  86               	/* stack size = 0 */
+  87               	.L__stack_usage = 0
+ 287:usb_keyboard.c **** }
+  88               		.loc 1 287 0
+  89 0000 8091 0000 		lds r24,usb_configuration
+ 288:usb_keyboard.c **** 
+  90               		.loc 1 288 0
+  91 0004 0895      		ret
+  92               		.cfi_endproc
+  93               	.LFE2:
+  95               		.section	.text.usb_keyboard_send,"ax",@progbits
+  96               	.global	usb_keyboard_send
+  98               	usb_keyboard_send:
+  99               	.LFB4:
+ 307:usb_keyboard.c **** 	uint8_t i, intr_state, timeout;
+ 100               		.loc 1 307 0
+ 101               		.cfi_startproc
+ 102               	/* prologue: function */
+ 103               	/* frame size = 0 */
+ 104               	/* stack size = 0 */
+ 105               	.L__stack_usage = 0
+ 310:usb_keyboard.c **** 	intr_state = SREG;
+ 106               		.loc 1 310 0
+ 107 0000 8091 0000 		lds r24,usb_configuration
+ 108 0004 8111      		cpse r24,__zero_reg__
+ 109 0006 00C0      		rjmp .L12
+ 110               	.L15:
+ 111 0008 8FEF      		ldi r24,lo8(-1)
+ 112 000a 0895      		ret
+ 113               	.L12:
+ 311:usb_keyboard.c **** 	cli();
+ 114               		.loc 1 311 0
+ 115 000c 8FB7      		in r24,__SREG__
+ 116               	.LVL0:
+ 312:usb_keyboard.c **** 	UENUM = KEYBOARD_ENDPOINT;
+ 117               		.loc 1 312 0
+ 118               	/* #APP */
+ 119               	 ;  312 "usb_keyboard.c" 1
+ 120 000e F894      		cli
+ 121               	 ;  0 "" 2
+ 313:usb_keyboard.c **** 	timeout = UDFNUML + 50;
+ 122               		.loc 1 313 0
+ 123               	/* #NOAPP */
+ 124 0010 93E0      		ldi r25,lo8(3)
+ 125 0012 9093 E900 		sts 233,r25
+ 314:usb_keyboard.c **** 	while (1) {
+ 126               		.loc 1 314 0
+ 127 0016 9091 E400 		lds r25,228
+ 128 001a 9E5C      		subi r25,lo8(-(50))
+ 129               	.LVL1:
+ 326:usb_keyboard.c **** 	}
+ 130               		.loc 1 326 0
+ 131 001c 23E0      		ldi r18,lo8(3)
+ 132               	.L16:
+ 317:usb_keyboard.c **** 		SREG = intr_state;
+ 133               		.loc 1 317 0
+ 134 001e 3091 E800 		lds r19,232
+ 135 0022 35FD      		sbrc r19,5
+ 136 0024 00C0      		rjmp .L14
+ 318:usb_keyboard.c **** 		// has the USB gone offline?
+ 137               		.loc 1 318 0
+ 138 0026 8FBF      		out __SREG__,r24
+ 320:usb_keyboard.c **** 		// have we waited too long?
+ 139               		.loc 1 320 0
+ 140 0028 8091 0000 		lds r24,usb_configuration
+ 141               	.LVL2:
+ 142 002c 8823      		tst r24
+ 143 002e 01F0      		breq .L15
+ 322:usb_keyboard.c **** 		// get ready to try checking again
+ 144               		.loc 1 322 0
+ 145 0030 8091 E400 		lds r24,228
+ 146 0034 9817      		cp r25,r24
+ 147 0036 01F0      		breq .L15
+ 324:usb_keyboard.c **** 		cli();
+ 148               		.loc 1 324 0
+ 149 0038 8FB7      		in r24,__SREG__
+ 150               	.LVL3:
+ 325:usb_keyboard.c **** 		UENUM = KEYBOARD_ENDPOINT;
+ 151               		.loc 1 325 0
+ 152               	/* #APP */
+ 153               	 ;  325 "usb_keyboard.c" 1
+ 154 003a F894      		cli
+ 155               	 ;  0 "" 2
+ 326:usb_keyboard.c **** 	}
+ 156               		.loc 1 326 0
+ 157               	/* #NOAPP */
+ 158 003c 2093 E900 		sts 233,r18
+ 327:usb_keyboard.c **** 	UEDATX = keyboard_modifier_keys;
+ 159               		.loc 1 327 0
+ 160 0040 00C0      		rjmp .L16
+ 161               	.L14:
+ 328:usb_keyboard.c **** 	UEDATX = 0;
+ 162               		.loc 1 328 0
+ 163 0042 9091 0000 		lds r25,keyboard_modifier_keys
+ 164               	.LVL4:
+ 165 0046 9093 F100 		sts 241,r25
+ 329:usb_keyboard.c **** 	for (i=0; i<6; i++) {
+ 166               		.loc 1 329 0
+ 167 004a 1092 F100 		sts 241,__zero_reg__
+ 168               	.LVL5:
+ 169 004e E0E0      		ldi r30,lo8(keyboard_keys)
+ 170 0050 F0E0      		ldi r31,hi8(keyboard_keys)
+ 171               	.LVL6:
+ 172               	.L17:
+ 331:usb_keyboard.c **** 	}
+ 173               		.loc 1 331 0 discriminator 3
+ 174 0052 9191      		ld r25,Z+
+ 175               	.LVL7:
+ 176 0054 9093 F100 		sts 241,r25
+ 177               	.LVL8:
+ 330:usb_keyboard.c **** 		UEDATX = keyboard_keys[i];
+ 178               		.loc 1 330 0 discriminator 3
+ 179 0058 90E0      		ldi r25,hi8(keyboard_keys+6)
+ 180 005a E030      		cpi r30,lo8(keyboard_keys+6)
+ 181 005c F907      		cpc r31,r25
+ 182 005e 01F4      		brne .L17
+ 333:usb_keyboard.c **** 	keyboard_idle_count = 0;
+ 183               		.loc 1 333 0
+ 184 0060 9AE3      		ldi r25,lo8(58)
+ 185 0062 9093 E800 		sts 232,r25
+ 334:usb_keyboard.c **** 	SREG = intr_state;
+ 186               		.loc 1 334 0
+ 187 0066 1092 0000 		sts keyboard_idle_count,__zero_reg__
+ 335:usb_keyboard.c **** 	return 0;
+ 188               		.loc 1 335 0
+ 189 006a 8FBF      		out __SREG__,r24
+ 336:usb_keyboard.c **** }
+ 190               		.loc 1 336 0
+ 191 006c 80E0      		ldi r24,0
+ 192               	.LVL9:
+ 337:usb_keyboard.c **** 
+ 193               		.loc 1 337 0
+ 194 006e 0895      		ret
+ 195               		.cfi_endproc
+ 196               	.LFE4:
+ 198               		.section	.text.usb_keyboard_press,"ax",@progbits
+ 199               	.global	usb_keyboard_press
+ 201               	usb_keyboard_press:
+ 202               	.LFB3:
+ 293:usb_keyboard.c **** 	int8_t r;
+ 203               		.loc 1 293 0
+ 204               		.cfi_startproc
+ 205               	.LVL10:
+ 206               	/* prologue: function */
+ 207               	/* frame size = 0 */
+ 208               	/* stack size = 0 */
+ 209               	.L__stack_usage = 0
+ 296:usb_keyboard.c **** 	keyboard_keys[0] = key;
+ 210               		.loc 1 296 0
+ 211 0000 6093 0000 		sts keyboard_modifier_keys,r22
+ 297:usb_keyboard.c **** 	r = usb_keyboard_send();
+ 212               		.loc 1 297 0
+ 213 0004 8093 0000 		sts keyboard_keys,r24
+ 298:usb_keyboard.c **** 	if (r) return r;
+ 214               		.loc 1 298 0
+ 215 0008 0E94 0000 		call usb_keyboard_send
+ 216               	.LVL11:
+ 299:usb_keyboard.c **** 	keyboard_modifier_keys = 0;
+ 217               		.loc 1 299 0
+ 218 000c 8111      		cpse r24,__zero_reg__
+ 219 000e 00C0      		rjmp .L23
+ 300:usb_keyboard.c **** 	keyboard_keys[0] = 0;
+ 220               		.loc 1 300 0
+ 221 0010 1092 0000 		sts keyboard_modifier_keys,__zero_reg__
+ 301:usb_keyboard.c **** 	return usb_keyboard_send();
+ 222               		.loc 1 301 0
+ 223 0014 1092 0000 		sts keyboard_keys,__zero_reg__
+ 302:usb_keyboard.c **** }
+ 224               		.loc 1 302 0
+ 225 0018 0C94 0000 		jmp usb_keyboard_send
+ 226               	.LVL12:
+ 227               	.L23:
+ 303:usb_keyboard.c **** 
+ 228               		.loc 1 303 0
+ 229 001c 0895      		ret
+ 230               		.cfi_endproc
+ 231               	.LFE3:
+ 233               		.section	.text.__vector_10,"ax",@progbits
+ 234               	.global	__vector_10
+ 236               	__vector_10:
+ 237               	.LFB5:
+ 351:usb_keyboard.c **** 	uint8_t intbits, i;
+ 238               		.loc 1 351 0
+ 239               		.cfi_startproc
+ 240 0000 1F92      		push r1
+ 241               	.LCFI0:
+ 242               		.cfi_def_cfa_offset 3
+ 243               		.cfi_offset 1, -2
+ 244 0002 0F92      		push r0
+ 245               	.LCFI1:
+ 246               		.cfi_def_cfa_offset 4
+ 247               		.cfi_offset 0, -3
+ 248 0004 0FB6      		in r0,__SREG__
+ 249 0006 0F92      		push r0
+ 250 0008 1124      		clr __zero_reg__
+ 251 000a 8F93      		push r24
+ 252               	.LCFI2:
+ 253               		.cfi_def_cfa_offset 5
+ 254               		.cfi_offset 24, -4
+ 255 000c 9F93      		push r25
+ 256               	.LCFI3:
+ 257               		.cfi_def_cfa_offset 6
+ 258               		.cfi_offset 25, -5
+ 259 000e EF93      		push r30
+ 260               	.LCFI4:
+ 261               		.cfi_def_cfa_offset 7
+ 262               		.cfi_offset 30, -6
+ 263 0010 FF93      		push r31
+ 264               	.LCFI5:
+ 265               		.cfi_def_cfa_offset 8
+ 266               		.cfi_offset 31, -7
+ 267               	/* prologue: Signal */
+ 268               	/* frame size = 0 */
+ 269               	/* stack size = 7 */
+ 270               	.L__stack_usage = 7
+ 355:usb_keyboard.c ****         UDINT = 0;
+ 271               		.loc 1 355 0
+ 272 0012 8091 E100 		lds r24,225
+ 273               	.LVL13:
+ 356:usb_keyboard.c ****         if (intbits & (1<<EORSTI)) {
+ 274               		.loc 1 356 0
+ 275 0016 1092 E100 		sts 225,__zero_reg__
+ 357:usb_keyboard.c **** 		UENUM = 0;
+ 276               		.loc 1 357 0
+ 277 001a 83FF      		sbrs r24,3
+ 278 001c 00C0      		rjmp .L25
+ 358:usb_keyboard.c **** 		UECONX = 1;
+ 279               		.loc 1 358 0
+ 280 001e 1092 E900 		sts 233,__zero_reg__
+ 359:usb_keyboard.c **** 		UECFG0X = EP_TYPE_CONTROL;
+ 281               		.loc 1 359 0
+ 282 0022 91E0      		ldi r25,lo8(1)
+ 283 0024 9093 EB00 		sts 235,r25
+ 360:usb_keyboard.c **** 		UECFG1X = EP_SIZE(ENDPOINT0_SIZE) | EP_SINGLE_BUFFER;
+ 284               		.loc 1 360 0
+ 285 0028 1092 EC00 		sts 236,__zero_reg__
+ 361:usb_keyboard.c **** 		UEIENX = (1<<RXSTPE);
+ 286               		.loc 1 361 0
+ 287 002c 92E2      		ldi r25,lo8(34)
+ 288 002e 9093 ED00 		sts 237,r25
+ 362:usb_keyboard.c **** 		usb_configuration = 0;
+ 289               		.loc 1 362 0
+ 290 0032 98E0      		ldi r25,lo8(8)
+ 291 0034 9093 F000 		sts 240,r25
+ 363:usb_keyboard.c ****         }
+ 292               		.loc 1 363 0
+ 293 0038 1092 0000 		sts usb_configuration,__zero_reg__
+ 294               	.L25:
+ 365:usb_keyboard.c **** 		if (keyboard_idle_config && (++div4 & 3) == 0) {
+ 295               		.loc 1 365 0
+ 296 003c 82FF      		sbrs r24,2
+ 297 003e 00C0      		rjmp .L24
+ 365:usb_keyboard.c **** 		if (keyboard_idle_config && (++div4 & 3) == 0) {
+ 298               		.loc 1 365 0 is_stmt 0 discriminator 1
+ 299 0040 8091 0000 		lds r24,usb_configuration
+ 300               	.LVL14:
+ 301 0044 8823      		tst r24
+ 302 0046 01F0      		breq .L24
+ 366:usb_keyboard.c **** 			UENUM = KEYBOARD_ENDPOINT;
+ 303               		.loc 1 366 0 is_stmt 1
+ 304 0048 8091 0000 		lds r24,keyboard_idle_config
+ 305 004c 8823      		tst r24
+ 306 004e 01F0      		breq .L24
+ 366:usb_keyboard.c **** 			UENUM = KEYBOARD_ENDPOINT;
+ 307               		.loc 1 366 0 is_stmt 0 discriminator 1
+ 308 0050 8091 0000 		lds r24,div4.1828
+ 309 0054 8F5F      		subi r24,lo8(-(1))
+ 310 0056 8093 0000 		sts div4.1828,r24
+ 311 005a 8370      		andi r24,lo8(3)
+ 312 005c 01F4      		brne .L24
+ 367:usb_keyboard.c **** 			if (UEINTX & (1<<RWAL)) {
+ 313               		.loc 1 367 0 is_stmt 1
+ 314 005e 83E0      		ldi r24,lo8(3)
+ 315 0060 8093 E900 		sts 233,r24
+ 368:usb_keyboard.c **** 				keyboard_idle_count++;
+ 316               		.loc 1 368 0
+ 317 0064 8091 E800 		lds r24,232
+ 318 0068 85FF      		sbrs r24,5
+ 319 006a 00C0      		rjmp .L24
+ 369:usb_keyboard.c **** 				if (keyboard_idle_count == keyboard_idle_config) {
+ 320               		.loc 1 369 0
+ 321 006c 8091 0000 		lds r24,keyboard_idle_count
+ 322 0070 8F5F      		subi r24,lo8(-(1))
+ 323 0072 8093 0000 		sts keyboard_idle_count,r24
+ 370:usb_keyboard.c **** 					keyboard_idle_count = 0;
+ 324               		.loc 1 370 0
+ 325 0076 9091 0000 		lds r25,keyboard_idle_config
+ 326 007a 8913      		cpse r24,r25
+ 327 007c 00C0      		rjmp .L24
+ 371:usb_keyboard.c **** 					UEDATX = keyboard_modifier_keys;
+ 328               		.loc 1 371 0
+ 329 007e 1092 0000 		sts keyboard_idle_count,__zero_reg__
+ 372:usb_keyboard.c **** 					UEDATX = 0;
+ 330               		.loc 1 372 0
+ 331 0082 8091 0000 		lds r24,keyboard_modifier_keys
+ 332 0086 8093 F100 		sts 241,r24
+ 373:usb_keyboard.c **** 					for (i=0; i<6; i++) {
+ 333               		.loc 1 373 0
+ 334 008a 1092 F100 		sts 241,__zero_reg__
+ 335               	.LVL15:
+ 336 008e E0E0      		ldi r30,lo8(keyboard_keys)
+ 337 0090 F0E0      		ldi r31,hi8(keyboard_keys)
+ 338               	.LVL16:
+ 339               	.L29:
+ 375:usb_keyboard.c **** 					}
+ 340               		.loc 1 375 0 discriminator 3
+ 341 0092 8191      		ld r24,Z+
+ 342               	.LVL17:
+ 343 0094 8093 F100 		sts 241,r24
+ 344               	.LVL18:
+ 374:usb_keyboard.c **** 						UEDATX = keyboard_keys[i];
+ 345               		.loc 1 374 0 discriminator 3
+ 346 0098 80E0      		ldi r24,hi8(keyboard_keys+6)
+ 347 009a E030      		cpi r30,lo8(keyboard_keys+6)
+ 348 009c F807      		cpc r31,r24
+ 349 009e 01F4      		brne .L29
+ 377:usb_keyboard.c **** 				}
+ 350               		.loc 1 377 0
+ 351 00a0 8AE3      		ldi r24,lo8(58)
+ 352 00a2 8093 E800 		sts 232,r24
+ 353               	.LVL19:
+ 354               	.L24:
+ 355               	/* epilogue start */
+ 382:usb_keyboard.c **** 
+ 356               		.loc 1 382 0
+ 357 00a6 FF91      		pop r31
+ 358 00a8 EF91      		pop r30
+ 359 00aa 9F91      		pop r25
+ 360 00ac 8F91      		pop r24
+ 361 00ae 0F90      		pop r0
+ 362 00b0 0FBE      		out __SREG__,r0
+ 363 00b2 0F90      		pop r0
+ 364 00b4 1F90      		pop r1
+ 365 00b6 1895      		reti
+ 366               		.cfi_endproc
+ 367               	.LFE5:
+ 369               		.section	.text.__vector_11,"ax",@progbits
+ 370               	.global	__vector_11
+ 372               	__vector_11:
+ 373               	.LFB10:
+ 391:usb_keyboard.c **** static inline void usb_send_in(void)
+ 392:usb_keyboard.c **** {
+ 393:usb_keyboard.c **** 	UEINTX = ~(1<<TXINI);
+ 394:usb_keyboard.c **** }
+ 395:usb_keyboard.c **** static inline void usb_wait_receive_out(void)
+ 396:usb_keyboard.c **** {
+ 397:usb_keyboard.c **** 	while (!(UEINTX & (1<<RXOUTI))) ;
+ 398:usb_keyboard.c **** }
+ 399:usb_keyboard.c **** static inline void usb_ack_out(void)
+ 400:usb_keyboard.c **** {
+ 401:usb_keyboard.c **** 	UEINTX = ~(1<<RXOUTI);
+ 402:usb_keyboard.c **** }
+ 403:usb_keyboard.c **** 
+ 404:usb_keyboard.c **** 
+ 405:usb_keyboard.c **** 
+ 406:usb_keyboard.c **** // USB Endpoint Interrupt - endpoint 0 is handled here.  The
+ 407:usb_keyboard.c **** // other endpoints are manipulated by the user-callable
+ 408:usb_keyboard.c **** // functions, and the start-of-frame interrupt.
+ 409:usb_keyboard.c **** //
+ 410:usb_keyboard.c **** ISR(USB_COM_vect)
+ 411:usb_keyboard.c **** {
+ 374               		.loc 1 411 0
+ 375               		.cfi_startproc
+ 376 0000 1F92      		push r1
+ 377               	.LCFI6:
+ 378               		.cfi_def_cfa_offset 3
+ 379               		.cfi_offset 1, -2
+ 380 0002 0F92      		push r0
+ 381               	.LCFI7:
+ 382               		.cfi_def_cfa_offset 4
+ 383               		.cfi_offset 0, -3
+ 384 0004 0FB6      		in r0,__SREG__
+ 385 0006 0F92      		push r0
+ 386 0008 1124      		clr __zero_reg__
+ 387 000a EF92      		push r14
+ 388               	.LCFI8:
+ 389               		.cfi_def_cfa_offset 5
+ 390               		.cfi_offset 14, -4
+ 391 000c FF92      		push r15
+ 392               	.LCFI9:
+ 393               		.cfi_def_cfa_offset 6
+ 394               		.cfi_offset 15, -5
+ 395 000e 0F93      		push r16
+ 396               	.LCFI10:
+ 397               		.cfi_def_cfa_offset 7
+ 398               		.cfi_offset 16, -6
+ 399 0010 1F93      		push r17
+ 400               	.LCFI11:
+ 401               		.cfi_def_cfa_offset 8
+ 402               		.cfi_offset 17, -7
+ 403 0012 2F93      		push r18
+ 404               	.LCFI12:
+ 405               		.cfi_def_cfa_offset 9
+ 406               		.cfi_offset 18, -8
+ 407 0014 3F93      		push r19
+ 408               	.LCFI13:
+ 409               		.cfi_def_cfa_offset 10
+ 410               		.cfi_offset 19, -9
+ 411 0016 4F93      		push r20
+ 412               	.LCFI14:
+ 413               		.cfi_def_cfa_offset 11
+ 414               		.cfi_offset 20, -10
+ 415 0018 5F93      		push r21
+ 416               	.LCFI15:
+ 417               		.cfi_def_cfa_offset 12
+ 418               		.cfi_offset 21, -11
+ 419 001a 6F93      		push r22
+ 420               	.LCFI16:
+ 421               		.cfi_def_cfa_offset 13
+ 422               		.cfi_offset 22, -12
+ 423 001c 7F93      		push r23
+ 424               	.LCFI17:
+ 425               		.cfi_def_cfa_offset 14
+ 426               		.cfi_offset 23, -13
+ 427 001e 8F93      		push r24
+ 428               	.LCFI18:
+ 429               		.cfi_def_cfa_offset 15
+ 430               		.cfi_offset 24, -14
+ 431 0020 9F93      		push r25
+ 432               	.LCFI19:
+ 433               		.cfi_def_cfa_offset 16
+ 434               		.cfi_offset 25, -15
+ 435 0022 AF93      		push r26
+ 436               	.LCFI20:
+ 437               		.cfi_def_cfa_offset 17
+ 438               		.cfi_offset 26, -16
+ 439 0024 BF93      		push r27
+ 440               	.LCFI21:
+ 441               		.cfi_def_cfa_offset 18
+ 442               		.cfi_offset 27, -17
+ 443 0026 EF93      		push r30
+ 444               	.LCFI22:
+ 445               		.cfi_def_cfa_offset 19
+ 446               		.cfi_offset 30, -18
+ 447 0028 FF93      		push r31
+ 448               	.LCFI23:
+ 449               		.cfi_def_cfa_offset 20
+ 450               		.cfi_offset 31, -19
+ 451 002a CF93      		push r28
+ 452               	.LCFI24:
+ 453               		.cfi_def_cfa_offset 21
+ 454               		.cfi_offset 28, -20
+ 455 002c DF93      		push r29
+ 456               	.LCFI25:
+ 457               		.cfi_def_cfa_offset 22
+ 458               		.cfi_offset 29, -21
+ 459 002e 1F92      		push __zero_reg__
+ 460               	.LCFI26:
+ 461               		.cfi_def_cfa_offset 23
+ 462 0030 CDB7      		in r28,__SP_L__
+ 463 0032 DEB7      		in r29,__SP_H__
+ 464               	.LCFI27:
+ 465               		.cfi_def_cfa_register 28
+ 466               	/* prologue: Signal */
+ 467               	/* frame size = 1 */
+ 468               	/* stack size = 22 */
+ 469               	.L__stack_usage = 22
+ 412:usb_keyboard.c ****         uint8_t intbits;
+ 413:usb_keyboard.c **** 	const uint8_t *list;
+ 414:usb_keyboard.c ****         const uint8_t *cfg;
+ 415:usb_keyboard.c **** 	uint8_t i, n, len, en;
+ 416:usb_keyboard.c **** 	uint8_t bmRequestType;
+ 417:usb_keyboard.c **** 	uint8_t bRequest;
+ 418:usb_keyboard.c **** 	uint16_t wValue;
+ 419:usb_keyboard.c **** 	uint16_t wIndex;
+ 420:usb_keyboard.c **** 	uint16_t wLength;
+ 421:usb_keyboard.c **** 	uint16_t desc_val;
+ 422:usb_keyboard.c **** 	const uint8_t *desc_addr;
+ 423:usb_keyboard.c **** 	uint8_t	desc_length;
+ 424:usb_keyboard.c **** 
+ 425:usb_keyboard.c ****         UENUM = 0;
+ 470               		.loc 1 425 0
+ 471 0034 1092 E900 		sts 233,__zero_reg__
+ 426:usb_keyboard.c **** 	intbits = UEINTX;
+ 472               		.loc 1 426 0
+ 473 0038 8091 E800 		lds r24,232
+ 474               	.LVL20:
+ 427:usb_keyboard.c ****         if (intbits & (1<<RXSTPI)) {
+ 475               		.loc 1 427 0
+ 476 003c 83FF      		sbrs r24,3
+ 477 003e 00C0      		rjmp .L44
+ 428:usb_keyboard.c ****                 bmRequestType = UEDATX;
+ 478               		.loc 1 428 0
+ 479 0040 9091 F100 		lds r25,241
+ 480               	.LVL21:
+ 429:usb_keyboard.c ****                 bRequest = UEDATX;
+ 481               		.loc 1 429 0
+ 482 0044 8091 F100 		lds r24,241
+ 483               	.LVL22:
+ 430:usb_keyboard.c ****                 wValue = UEDATX;
+ 484               		.loc 1 430 0
+ 485 0048 0091 F100 		lds r16,241
+ 486               	.LVL23:
+ 431:usb_keyboard.c ****                 wValue |= (UEDATX << 8);
+ 487               		.loc 1 431 0
+ 488 004c 2091 F100 		lds r18,241
+ 489 0050 10E0      		ldi r17,0
+ 490 0052 122B      		or r17,r18
+ 491               	.LVL24:
+ 432:usb_keyboard.c ****                 wIndex = UEDATX;
+ 492               		.loc 1 432 0
+ 493 0054 3091 F100 		lds r19,241
+ 494               	.LVL25:
+ 433:usb_keyboard.c ****                 wIndex |= (UEDATX << 8);
+ 495               		.loc 1 433 0
+ 496 0058 2091 F100 		lds r18,241
+ 497 005c E32E      		mov r14,r19
+ 498 005e F12C      		mov r15,__zero_reg__
+ 499 0060 F22A      		or r15,r18
+ 500               	.LVL26:
+ 434:usb_keyboard.c ****                 wLength = UEDATX;
+ 501               		.loc 1 434 0
+ 502 0062 2091 F100 		lds r18,241
+ 503               	.LVL27:
+ 435:usb_keyboard.c ****                 wLength |= (UEDATX << 8);
+ 504               		.loc 1 435 0
+ 505 0066 6091 F100 		lds r22,241
+ 506               	.LVL28:
+ 436:usb_keyboard.c ****                 UEINTX = ~((1<<RXSTPI) | (1<<RXOUTI) | (1<<TXINI));
+ 507               		.loc 1 436 0
+ 508 006a 32EF      		ldi r19,lo8(-14)
+ 509 006c 3093 E800 		sts 232,r19
+ 437:usb_keyboard.c ****                 if (bRequest == GET_DESCRIPTOR) {
+ 510               		.loc 1 437 0
+ 511 0070 8630      		cpi r24,lo8(6)
+ 512 0072 01F0      		breq .+2
+ 513 0074 00C0      		rjmp .L93
+ 514 0076 80E0      		ldi r24,lo8(descriptor_list)
+ 515 0078 90E0      		ldi r25,hi8(descriptor_list)
+ 516               	.LVL29:
+ 517 007a 40E0      		ldi r20,lo8(descriptor_list+49)
+ 518 007c 50E0      		ldi r21,hi8(descriptor_list+49)
+ 519               	.L53:
+ 520               	.LVL30:
+ 521               	.LBB72:
+ 438:usb_keyboard.c **** 			list = (const uint8_t *)descriptor_list;
+ 439:usb_keyboard.c **** 			for (i=0; ; i++) {
+ 440:usb_keyboard.c **** 				if (i >= NUM_DESC_LIST) {
+ 441:usb_keyboard.c **** 					UECONX = (1<<STALLRQ)|(1<<EPEN);  //stall
+ 442:usb_keyboard.c **** 					return;
+ 443:usb_keyboard.c **** 				}
+ 444:usb_keyboard.c **** 				desc_val = pgm_read_word(list);
+ 522               		.loc 1 444 0
+ 523 007e FC01      		movw r30,r24
+ 524               	/* #APP */
+ 525               	 ;  444 "usb_keyboard.c" 1
+ 526 0080 A591      		lpm r26, Z+
+ 527 0082 B491      		lpm r27, Z
+ 528               		
+ 529               	 ;  0 "" 2
+ 530               	.LVL31:
+ 531               	/* #NOAPP */
+ 532               	.LBE72:
+ 445:usb_keyboard.c **** 				if (desc_val != wValue) {
+ 533               		.loc 1 445 0
+ 534 0084 0A17      		cp r16,r26
+ 535 0086 1B07      		cpc r17,r27
+ 536 0088 01F4      		brne .L48
+ 537               	.LVL32:
+ 538               	.LBB73:
+ 446:usb_keyboard.c **** 					list += sizeof(struct descriptor_list_struct);
+ 447:usb_keyboard.c **** 					continue;
+ 448:usb_keyboard.c **** 				}
+ 449:usb_keyboard.c **** 				list += 2;
+ 450:usb_keyboard.c **** 				desc_val = pgm_read_word(list);
+ 539               		.loc 1 450 0
+ 540 008a FC01      		movw r30,r24
+ 541 008c 3296      		adiw r30,2
+ 542               	.LVL33:
+ 543               	/* #APP */
+ 544               	 ;  450 "usb_keyboard.c" 1
+ 545 008e A591      		lpm r26, Z+
+ 546 0090 B491      		lpm r27, Z
+ 547               		
+ 548               	 ;  0 "" 2
+ 549               	.LVL34:
+ 550               	/* #NOAPP */
+ 551               	.LBE73:
+ 451:usb_keyboard.c **** 				if (desc_val != wIndex) {
+ 552               		.loc 1 451 0
+ 553 0092 EA16      		cp r14,r26
+ 554 0094 FB06      		cpc r15,r27
+ 555 0096 01F4      		brne .L48
+ 556               	.LVL35:
+ 452:usb_keyboard.c **** 					list += sizeof(struct descriptor_list_struct)-2;
+ 453:usb_keyboard.c **** 					continue;
+ 454:usb_keyboard.c **** 				}
+ 455:usb_keyboard.c **** 				list += 2;
+ 557               		.loc 1 455 0
+ 558 0098 FC01      		movw r30,r24
+ 559 009a 3496      		adiw r30,4
+ 560               	.LVL36:
+ 561               	.LBB74:
+ 456:usb_keyboard.c **** 				desc_addr = (const uint8_t *)pgm_read_word(list);
+ 562               		.loc 1 456 0
+ 563               	/* #APP */
+ 564               	 ;  456 "usb_keyboard.c" 1
+ 565 009c 4591      		lpm r20, Z+
+ 566 009e 5491      		lpm r21, Z
+ 567               		
+ 568               	 ;  0 "" 2
+ 569               	.LVL37:
+ 570               	/* #NOAPP */
+ 571               	.LBE74:
+ 457:usb_keyboard.c **** 				list += 2;
+ 572               		.loc 1 457 0
+ 573 00a0 FC01      		movw r30,r24
+ 574 00a2 3696      		adiw r30,6
+ 575               	.LVL38:
+ 576               	.LBB75:
+ 458:usb_keyboard.c **** 				desc_length = pgm_read_byte(list);
+ 577               		.loc 1 458 0
+ 578               	/* #APP */
+ 579               	 ;  458 "usb_keyboard.c" 1
+ 580 00a4 8491      		lpm r24, Z
+ 581               		
+ 582               	 ;  0 "" 2
+ 583               	.LVL39:
+ 584               	/* #NOAPP */
+ 585               	.LBE75:
+ 459:usb_keyboard.c **** 				break;
+ 460:usb_keyboard.c **** 			}
+ 461:usb_keyboard.c **** 			len = (wLength < 256) ? wLength : 255;
+ 586               		.loc 1 461 0
+ 587 00a6 30E0      		ldi r19,0
+ 588 00a8 362B      		or r19,r22
+ 589 00aa 2F3F      		cpi r18,-1
+ 590 00ac 3105      		cpc r19,__zero_reg__
+ 591 00ae 01F0      		breq .L49
+ 592 00b0 00F0      		brlo .L49
+ 593 00b2 2FEF      		ldi r18,lo8(-1)
+ 594 00b4 30E0      		ldi r19,0
+ 595               	.LVL40:
+ 596               	.L49:
+ 597 00b6 2817      		cp r18,r24
+ 598 00b8 00F4      		brsh .L50
+ 599 00ba 822F      		mov r24,r18
+ 600               	.LVL41:
+ 601               	.L50:
+ 602               	.LBB76:
+ 603               	.LBB77:
+ 393:usb_keyboard.c **** }
+ 604               		.loc 1 393 0
+ 605 00bc 3EEF      		ldi r19,lo8(-2)
+ 606 00be 00C0      		rjmp .L54
+ 607               	.LVL42:
+ 608               	.L48:
+ 609 00c0 0796      		adiw r24,7
+ 610               	.LBE77:
+ 611               	.LBE76:
+ 440:usb_keyboard.c **** 					UECONX = (1<<STALLRQ)|(1<<EPEN);  //stall
+ 612               		.loc 1 440 0
+ 613 00c2 4817      		cp r20,r24
+ 614 00c4 5907      		cpc r21,r25
+ 615 00c6 01F4      		brne .L53
+ 616 00c8 00C0      		rjmp .L44
+ 617               	.LVL43:
+ 618               	.L98:
+ 619 00ca 490F      		add r20,r25
+ 620 00cc 511D      		adc r21,__zero_reg__
+ 462:usb_keyboard.c **** 			if (len > desc_length) len = desc_length;
+ 463:usb_keyboard.c **** 			do {
+ 464:usb_keyboard.c **** 				// wait for host ready for IN packet
+ 465:usb_keyboard.c **** 				do {
+ 466:usb_keyboard.c **** 					i = UEINTX;
+ 467:usb_keyboard.c **** 				} while (!(i & ((1<<TXINI)|(1<<RXOUTI))));
+ 468:usb_keyboard.c **** 				if (i & (1<<RXOUTI)) return;	// abort
+ 469:usb_keyboard.c **** 				// send IN packet
+ 470:usb_keyboard.c **** 				n = len < ENDPOINT0_SIZE ? len : ENDPOINT0_SIZE;
+ 471:usb_keyboard.c **** 				for (i = n; i; i--) {
+ 472:usb_keyboard.c **** 					UEDATX = pgm_read_byte(desc_addr++);
+ 473:usb_keyboard.c **** 				}
+ 474:usb_keyboard.c **** 				len -= n;
+ 621               		.loc 1 474 0
+ 622 00ce 891B      		sub r24,r25
+ 623               	.LVL44:
+ 624               	.LBB79:
+ 625               	.LBB78:
+ 393:usb_keyboard.c **** }
+ 626               		.loc 1 393 0
+ 627 00d0 3093 E800 		sts 232,r19
+ 628               	.LBE78:
+ 629               	.LBE79:
+ 475:usb_keyboard.c **** 				usb_send_in();
+ 476:usb_keyboard.c **** 			} while (len || n == ENDPOINT0_SIZE);
+ 630               		.loc 1 476 0
+ 631 00d4 8823      		tst r24
+ 632 00d6 01F0      		breq .L97
+ 633               	.LVL45:
+ 634               	.L54:
+ 466:usb_keyboard.c **** 				} while (!(i & ((1<<TXINI)|(1<<RXOUTI))));
+ 635               		.loc 1 466 0 discriminator 1
+ 636 00d8 9091 E800 		lds r25,232
+ 637               	.LVL46:
+ 467:usb_keyboard.c **** 				if (i & (1<<RXOUTI)) return;	// abort
+ 638               		.loc 1 467 0 discriminator 1
+ 639 00dc 292F      		mov r18,r25
+ 640 00de 2570      		andi r18,lo8(5)
+ 641 00e0 01F0      		breq .L54
+ 468:usb_keyboard.c **** 				// send IN packet
+ 642               		.loc 1 468 0
+ 643 00e2 92FD      		sbrc r25,2
+ 644 00e4 00C0      		rjmp .L43
+ 470:usb_keyboard.c **** 				for (i = n; i; i--) {
+ 645               		.loc 1 470 0
+ 646 00e6 982F      		mov r25,r24
+ 647               	.LVL47:
+ 648 00e8 8132      		cpi r24,lo8(33)
+ 649 00ea 00F0      		brlo .L56
+ 650 00ec 90E2      		ldi r25,lo8(32)
+ 651               	.L56:
+ 652               	.LVL48:
+ 471:usb_keyboard.c **** 					UEDATX = pgm_read_byte(desc_addr++);
+ 653               		.loc 1 471 0
+ 654 00ee FA01      		movw r30,r20
+ 655 00f0 292F      		mov r18,r25
+ 656               	.LVL49:
+ 657               	.L57:
+ 471:usb_keyboard.c **** 					UEDATX = pgm_read_byte(desc_addr++);
+ 658               		.loc 1 471 0 is_stmt 0 discriminator 1
+ 659 00f2 2223      		tst r18
+ 660 00f4 01F0      		breq .L98
+ 661               	.LVL50:
+ 662               	.LBB80:
+ 472:usb_keyboard.c **** 				}
+ 663               		.loc 1 472 0 is_stmt 1 discriminator 3
+ 664               	/* #APP */
+ 665               	 ;  472 "usb_keyboard.c" 1
+ 666 00f6 6491      		lpm r22, Z
+ 667               		
+ 668               	 ;  0 "" 2
+ 669               	.LVL51:
+ 670               	/* #NOAPP */
+ 671               	.LBE80:
+ 672 00f8 6093 F100 		sts 241,r22
+ 471:usb_keyboard.c **** 					UEDATX = pgm_read_byte(desc_addr++);
+ 673               		.loc 1 471 0 discriminator 3
+ 674 00fc 2150      		subi r18,lo8(-(-1))
+ 675               	.LVL52:
+ 676 00fe 3196      		adiw r30,1
+ 677               	.LVL53:
+ 678 0100 00C0      		rjmp .L57
+ 679               	.LVL54:
+ 680               	.L97:
+ 681               		.loc 1 476 0 discriminator 1
+ 682 0102 9032      		cpi r25,lo8(32)
+ 683 0104 01F0      		breq .L54
+ 684 0106 00C0      		rjmp .L43
+ 685               	.LVL55:
+ 686               	.L93:
+ 477:usb_keyboard.c **** 			return;
+ 478:usb_keyboard.c ****                 }
+ 479:usb_keyboard.c **** 		if (bRequest == SET_ADDRESS) {
+ 687               		.loc 1 479 0
+ 688 0108 8530      		cpi r24,lo8(5)
+ 689 010a 01F4      		brne .L61
+ 690               	.LBB81:
+ 691               	.LBB82:
+ 393:usb_keyboard.c **** }
+ 692               		.loc 1 393 0
+ 693 010c 8EEF      		ldi r24,lo8(-2)
+ 694               	.LVL56:
+ 695 010e 8093 E800 		sts 232,r24
+ 696               	.LBE82:
+ 697               	.LBE81:
+ 480:usb_keyboard.c **** 			usb_send_in();
+ 481:usb_keyboard.c **** 			usb_wait_in_ready();
+ 698               		.loc 1 481 0
+ 699 0112 0E94 0000 		call usb_wait_in_ready
+ 700               	.LVL57:
+ 482:usb_keyboard.c **** 			UDADDR = wValue | (1<<ADDEN);
+ 701               		.loc 1 482 0
+ 702 0116 0068      		ori r16,lo8(-128)
+ 703               	.LVL58:
+ 704 0118 0093 E300 		sts 227,r16
+ 483:usb_keyboard.c **** 			return;
+ 705               		.loc 1 483 0
+ 706 011c 00C0      		rjmp .L43
+ 707               	.LVL59:
+ 708               	.L61:
+ 484:usb_keyboard.c **** 		}
+ 485:usb_keyboard.c **** 		if (bRequest == SET_CONFIGURATION && bmRequestType == 0) {
+ 709               		.loc 1 485 0
+ 710 011e 8930      		cpi r24,lo8(9)
+ 711 0120 01F4      		brne .L62
+ 712               		.loc 1 485 0 is_stmt 0 discriminator 1
+ 713 0122 9111      		cpse r25,__zero_reg__
+ 714 0124 00C0      		rjmp .L63
+ 486:usb_keyboard.c **** 			usb_configuration = wValue;
+ 715               		.loc 1 486 0 is_stmt 1
+ 716 0126 0093 0000 		sts usb_configuration,r16
+ 717               	.LBB83:
+ 718               	.LBB84:
+ 393:usb_keyboard.c **** }
+ 719               		.loc 1 393 0
+ 720 012a 8EEF      		ldi r24,lo8(-2)
+ 721               	.LVL60:
+ 722 012c 8093 E800 		sts 232,r24
+ 723               	.LVL61:
+ 724               	.LBE84:
+ 725               	.LBE83:
+ 487:usb_keyboard.c **** 			usb_send_in();
+ 488:usb_keyboard.c **** 			cfg = endpoint_config_table;
+ 489:usb_keyboard.c **** 			for (i=1; i<5; i++) {
+ 726               		.loc 1 489 0
+ 727 0130 41E0      		ldi r20,lo8(1)
+ 488:usb_keyboard.c **** 			for (i=1; i<5; i++) {
+ 728               		.loc 1 488 0
+ 729 0132 80E0      		ldi r24,lo8(endpoint_config_table)
+ 730 0134 90E0      		ldi r25,hi8(endpoint_config_table)
+ 731               	.LVL62:
+ 732               	.L65:
+ 490:usb_keyboard.c **** 				UENUM = i;
+ 733               		.loc 1 490 0
+ 734 0136 4093 E900 		sts 233,r20
+ 735               	.LBB85:
+ 491:usb_keyboard.c **** 				en = pgm_read_byte(cfg++);
+ 736               		.loc 1 491 0
+ 737 013a 9C01      		movw r18,r24
+ 738 013c 2F5F      		subi r18,-1
+ 739 013e 3F4F      		sbci r19,-1
+ 740               	.LVL63:
+ 741 0140 FC01      		movw r30,r24
+ 742               	/* #APP */
+ 743               	 ;  491 "usb_keyboard.c" 1
+ 744 0142 5491      		lpm r21, Z
+ 745               		
+ 746               	 ;  0 "" 2
+ 747               	.LVL64:
+ 748               	/* #NOAPP */
+ 749               	.LBE85:
+ 492:usb_keyboard.c **** 				UECONX = en;
+ 750               		.loc 1 492 0
+ 751 0144 5093 EB00 		sts 235,r21
+ 493:usb_keyboard.c **** 				if (en) {
+ 752               		.loc 1 493 0
+ 753 0148 5523      		tst r21
+ 754 014a 01F0      		breq .L64
+ 755               	.LVL65:
+ 756               	.LBB86:
+ 494:usb_keyboard.c **** 					UECFG0X = pgm_read_byte(cfg++);
+ 757               		.loc 1 494 0
+ 758 014c F901      		movw r30,r18
+ 759               	/* #APP */
+ 760               	 ;  494 "usb_keyboard.c" 1
+ 761 014e 2491      		lpm r18, Z
+ 762               		
+ 763               	 ;  0 "" 2
+ 764               	.LVL66:
+ 765               	/* #NOAPP */
+ 766               	.LBE86:
+ 767 0150 2093 EC00 		sts 236,r18
+ 768               	.LBB87:
+ 495:usb_keyboard.c **** 					UECFG1X = pgm_read_byte(cfg++);
+ 769               		.loc 1 495 0
+ 770 0154 9C01      		movw r18,r24
+ 771               	.LVL67:
+ 772 0156 2D5F      		subi r18,-3
+ 773 0158 3F4F      		sbci r19,-1
+ 774               	.LVL68:
+ 775               	.LBE87:
+ 776               	.LBB88:
+ 494:usb_keyboard.c **** 					UECFG0X = pgm_read_byte(cfg++);
+ 777               		.loc 1 494 0
+ 778 015a 3196      		adiw r30,1
+ 779               	.LVL69:
+ 780               	.LBE88:
+ 781               	.LBB89:
+ 782               		.loc 1 495 0
+ 783               	/* #APP */
+ 784               	 ;  495 "usb_keyboard.c" 1
+ 785 015c E491      		lpm r30, Z
+ 786               		
+ 787               	 ;  0 "" 2
+ 788               	.LVL70:
+ 789               	/* #NOAPP */
+ 790               	.LBE89:
+ 791 015e E093 ED00 		sts 237,r30
+ 792               	.LVL71:
+ 793               	.L64:
+ 489:usb_keyboard.c **** 				UENUM = i;
+ 794               		.loc 1 489 0 discriminator 2
+ 795 0162 4F5F      		subi r20,lo8(-(1))
+ 796               	.LVL72:
+ 797 0164 4530      		cpi r20,lo8(5)
+ 798 0166 01F0      		breq .L99
+ 799 0168 C901      		movw r24,r18
+ 800               	.LVL73:
+ 801 016a 00C0      		rjmp .L65
+ 802               	.LVL74:
+ 803               	.L99:
+ 496:usb_keyboard.c **** 				}
+ 497:usb_keyboard.c **** 			}
+ 498:usb_keyboard.c ****         		UERST = 0x1E;
+ 804               		.loc 1 498 0
+ 805 016c 8EE1      		ldi r24,lo8(30)
+ 806               	.LVL75:
+ 807 016e 00C0      		rjmp .L95
+ 808               	.LVL76:
+ 809               	.L62:
+ 499:usb_keyboard.c ****         		UERST = 0;
+ 500:usb_keyboard.c **** 			return;
+ 501:usb_keyboard.c **** 		}
+ 502:usb_keyboard.c **** 		if (bRequest == GET_CONFIGURATION && bmRequestType == 0x80) {
+ 810               		.loc 1 502 0
+ 811 0170 8830      		cpi r24,lo8(8)
+ 812 0172 01F4      		brne .L66
+ 813               		.loc 1 502 0 is_stmt 0 discriminator 1
+ 814 0174 9038      		cpi r25,lo8(-128)
+ 815 0176 01F0      		breq .+2
+ 816 0178 00C0      		rjmp .L63
+ 503:usb_keyboard.c **** 			usb_wait_in_ready();
+ 817               		.loc 1 503 0 is_stmt 1
+ 818 017a 0E94 0000 		call usb_wait_in_ready
+ 819               	.LVL77:
+ 504:usb_keyboard.c **** 			UEDATX = usb_configuration;
+ 820               		.loc 1 504 0
+ 821 017e 8091 0000 		lds r24,usb_configuration
+ 822 0182 00C0      		rjmp .L96
+ 823               	.LVL78:
+ 824               	.L66:
+ 505:usb_keyboard.c **** 			usb_send_in();
+ 506:usb_keyboard.c **** 			return;
+ 507:usb_keyboard.c **** 		}
+ 508:usb_keyboard.c **** 
+ 509:usb_keyboard.c **** 		if (bRequest == GET_STATUS) {
+ 825               		.loc 1 509 0
+ 826 0184 8111      		cpse r24,__zero_reg__
+ 827 0186 00C0      		rjmp .L67
+ 510:usb_keyboard.c **** 			usb_wait_in_ready();
+ 828               		.loc 1 510 0
+ 829 0188 9983      		std Y+1,r25
+ 830 018a 0E94 0000 		call usb_wait_in_ready
+ 831               	.LVL79:
+ 511:usb_keyboard.c **** 			i = 0;
+ 512:usb_keyboard.c **** 			#ifdef SUPPORT_ENDPOINT_HALT
+ 513:usb_keyboard.c **** 			if (bmRequestType == 0x82) {
+ 832               		.loc 1 513 0
+ 833 018e 9981      		ldd r25,Y+1
+ 834 0190 9238      		cpi r25,lo8(-126)
+ 835 0192 01F4      		brne .L78
+ 514:usb_keyboard.c **** 				UENUM = wIndex;
+ 836               		.loc 1 514 0
+ 837 0194 E092 E900 		sts 233,r14
+ 515:usb_keyboard.c **** 				if (UECONX & (1<<STALLRQ)) i = 1;
+ 838               		.loc 1 515 0
+ 839 0198 8091 EB00 		lds r24,235
+ 511:usb_keyboard.c **** 			i = 0;
+ 840               		.loc 1 511 0
+ 841 019c 85FB      		bst r24,5
+ 842 019e 8827      		clr r24
+ 843 01a0 80F9      		bld r24,0
+ 844               	.LVL80:
+ 516:usb_keyboard.c **** 				UENUM = 0;
+ 845               		.loc 1 516 0
+ 846 01a2 1092 E900 		sts 233,__zero_reg__
+ 847 01a6 00C0      		rjmp .L68
+ 848               	.LVL81:
+ 849               	.L78:
+ 511:usb_keyboard.c **** 			#ifdef SUPPORT_ENDPOINT_HALT
+ 850               		.loc 1 511 0
+ 851 01a8 80E0      		ldi r24,0
+ 852               	.LVL82:
+ 853               	.L68:
+ 517:usb_keyboard.c **** 			}
+ 518:usb_keyboard.c **** 			#endif
+ 519:usb_keyboard.c **** 			UEDATX = i;
+ 854               		.loc 1 519 0
+ 855 01aa 8093 F100 		sts 241,r24
+ 520:usb_keyboard.c **** 			UEDATX = 0;
+ 856               		.loc 1 520 0
+ 857 01ae 1092 F100 		sts 241,__zero_reg__
+ 858 01b2 00C0      		rjmp .L94
+ 859               	.LVL83:
+ 860               	.L67:
+ 521:usb_keyboard.c **** 			usb_send_in();
+ 522:usb_keyboard.c **** 			return;
+ 523:usb_keyboard.c **** 		}
+ 524:usb_keyboard.c **** 		#ifdef SUPPORT_ENDPOINT_HALT
+ 525:usb_keyboard.c **** 		if ((bRequest == CLEAR_FEATURE || bRequest == SET_FEATURE)
+ 861               		.loc 1 525 0
+ 862 01b4 282F      		mov r18,r24
+ 863               	.LVL84:
+ 864 01b6 2D7F      		andi r18,lo8(-3)
+ 865 01b8 2130      		cpi r18,lo8(1)
+ 866 01ba 01F4      		brne .L63
+ 526:usb_keyboard.c **** 		  && bmRequestType == 0x02 && wValue == 0) {
+ 867               		.loc 1 526 0
+ 868 01bc 9230      		cpi r25,lo8(2)
+ 869 01be 01F4      		brne .L63
+ 870               		.loc 1 526 0 is_stmt 0 discriminator 1
+ 871 01c0 012B      		or r16,r17
+ 872 01c2 01F0      		breq .+2
+ 873 01c4 00C0      		rjmp .L44
+ 527:usb_keyboard.c **** 			i = wIndex & 0x7F;
+ 874               		.loc 1 527 0 is_stmt 1
+ 875 01c6 2E2D      		mov r18,r14
+ 876 01c8 2F77      		andi r18,lo8(127)
+ 877               	.LVL85:
+ 528:usb_keyboard.c **** 			if (i >= 1 && i <= MAX_ENDPOINT) {
+ 878               		.loc 1 528 0
+ 879 01ca 9FEF      		ldi r25,lo8(-1)
+ 880               	.LVL86:
+ 881 01cc 920F      		add r25,r18
+ 882 01ce 9430      		cpi r25,lo8(4)
+ 883 01d0 00F0      		brlo .+2
+ 884 01d2 00C0      		rjmp .L44
+ 885               	.LBB90:
+ 886               	.LBB91:
+ 393:usb_keyboard.c **** }
+ 887               		.loc 1 393 0
+ 888 01d4 9EEF      		ldi r25,lo8(-2)
+ 889 01d6 9093 E800 		sts 232,r25
+ 890               	.LBE91:
+ 891               	.LBE90:
+ 529:usb_keyboard.c **** 				usb_send_in();
+ 530:usb_keyboard.c **** 				UENUM = i;
+ 892               		.loc 1 530 0
+ 893 01da 2093 E900 		sts 233,r18
+ 531:usb_keyboard.c **** 				if (bRequest == SET_FEATURE) {
+ 894               		.loc 1 531 0
+ 895 01de 8330      		cpi r24,lo8(3)
+ 896 01e0 01F4      		brne .+2
+ 897 01e2 00C0      		rjmp .L44
+ 532:usb_keyboard.c **** 					UECONX = (1<<STALLRQ)|(1<<EPEN);
+ 533:usb_keyboard.c **** 				} else {
+ 534:usb_keyboard.c **** 					UECONX = (1<<STALLRQC)|(1<<RSTDT)|(1<<EPEN);
+ 898               		.loc 1 534 0
+ 899 01e4 89E1      		ldi r24,lo8(25)
+ 900               	.LVL87:
+ 901 01e6 8093 EB00 		sts 235,r24
+ 535:usb_keyboard.c **** 					UERST = (1 << i);
+ 902               		.loc 1 535 0
+ 903 01ea 81E0      		ldi r24,lo8(1)
+ 904 01ec 90E0      		ldi r25,0
+ 905 01ee 00C0      		rjmp 2f
+ 906               		1:
+ 907 01f0 880F      		lsl r24
+ 908               		2:
+ 909 01f2 2A95      		dec r18
+ 910 01f4 02F4      		brpl 1b
+ 911               	.LVL88:
+ 912               	.L95:
+ 913 01f6 8093 EA00 		sts 234,r24
+ 536:usb_keyboard.c **** 					UERST = 0;
+ 914               		.loc 1 536 0
+ 915 01fa 1092 EA00 		sts 234,__zero_reg__
+ 916 01fe 00C0      		rjmp .L43
+ 917               	.LVL89:
+ 918               	.L63:
+ 537:usb_keyboard.c **** 				}
+ 538:usb_keyboard.c **** 				return;
+ 539:usb_keyboard.c **** 			}
+ 540:usb_keyboard.c **** 		}
+ 541:usb_keyboard.c **** 		#endif
+ 542:usb_keyboard.c **** 		if (wIndex == KEYBOARD_INTERFACE) {
+ 919               		.loc 1 542 0
+ 920 0200 EF28      		or r14,r15
+ 921 0202 01F0      		breq .+2
+ 922 0204 00C0      		rjmp .L44
+ 543:usb_keyboard.c **** 			if (bmRequestType == 0xA1) {
+ 923               		.loc 1 543 0
+ 924 0206 913A      		cpi r25,lo8(-95)
+ 925 0208 01F4      		brne .L70
+ 544:usb_keyboard.c **** 				if (bRequest == HID_GET_REPORT) {
+ 926               		.loc 1 544 0
+ 927 020a 8130      		cpi r24,lo8(1)
+ 928 020c 01F4      		brne .L71
+ 545:usb_keyboard.c **** 					usb_wait_in_ready();
+ 929               		.loc 1 545 0
+ 930 020e 0E94 0000 		call usb_wait_in_ready
+ 931               	.LVL90:
+ 546:usb_keyboard.c **** 					UEDATX = keyboard_modifier_keys;
+ 932               		.loc 1 546 0
+ 933 0212 8091 0000 		lds r24,keyboard_modifier_keys
+ 934 0216 8093 F100 		sts 241,r24
+ 547:usb_keyboard.c **** 					UEDATX = 0;
+ 935               		.loc 1 547 0
+ 936 021a 1092 F100 		sts 241,__zero_reg__
+ 937               	.LVL91:
+ 938 021e E0E0      		ldi r30,lo8(keyboard_keys)
+ 939 0220 F0E0      		ldi r31,hi8(keyboard_keys)
+ 940 0222 80E0      		ldi r24,lo8(keyboard_keys+6)
+ 941 0224 90E0      		ldi r25,hi8(keyboard_keys+6)
+ 942               	.LVL92:
+ 943               	.L72:
+ 548:usb_keyboard.c **** 					for (i=0; i<6; i++) {
+ 549:usb_keyboard.c **** 						UEDATX = keyboard_keys[i];
+ 944               		.loc 1 549 0 discriminator 3
+ 945 0226 2191      		ld r18,Z+
+ 946               	.LVL93:
+ 947 0228 2093 F100 		sts 241,r18
+ 948               	.LVL94:
+ 548:usb_keyboard.c **** 					for (i=0; i<6; i++) {
+ 949               		.loc 1 548 0 discriminator 3
+ 950 022c 8E17      		cp r24,r30
+ 951 022e 9F07      		cpc r25,r31
+ 952 0230 01F4      		brne .L72
+ 953 0232 00C0      		rjmp .L94
+ 954               	.LVL95:
+ 955               	.L71:
+ 550:usb_keyboard.c **** 					}
+ 551:usb_keyboard.c **** 					usb_send_in();
+ 552:usb_keyboard.c **** 					return;
+ 553:usb_keyboard.c **** 				}
+ 554:usb_keyboard.c **** 				if (bRequest == HID_GET_IDLE) {
+ 956               		.loc 1 554 0
+ 957 0234 8230      		cpi r24,lo8(2)
+ 958 0236 01F4      		brne .L73
+ 555:usb_keyboard.c **** 					usb_wait_in_ready();
+ 959               		.loc 1 555 0
+ 960 0238 0E94 0000 		call usb_wait_in_ready
+ 961               	.LVL96:
+ 556:usb_keyboard.c **** 					UEDATX = keyboard_idle_config;
+ 962               		.loc 1 556 0
+ 963 023c 8091 0000 		lds r24,keyboard_idle_config
+ 964 0240 00C0      		rjmp .L96
+ 965               	.LVL97:
+ 966               	.L73:
+ 557:usb_keyboard.c **** 					usb_send_in();
+ 558:usb_keyboard.c **** 					return;
+ 559:usb_keyboard.c **** 				}
+ 560:usb_keyboard.c **** 				if (bRequest == HID_GET_PROTOCOL) {
+ 967               		.loc 1 560 0
+ 968 0242 8330      		cpi r24,lo8(3)
+ 969 0244 01F4      		brne .L44
+ 561:usb_keyboard.c **** 					usb_wait_in_ready();
+ 970               		.loc 1 561 0
+ 971 0246 0E94 0000 		call usb_wait_in_ready
+ 972               	.LVL98:
+ 562:usb_keyboard.c **** 					UEDATX = keyboard_protocol;
+ 973               		.loc 1 562 0
+ 974 024a 8091 0000 		lds r24,keyboard_protocol
+ 975               	.L96:
+ 976 024e 8093 F100 		sts 241,r24
+ 977 0252 00C0      		rjmp .L94
+ 978               	.LVL99:
+ 979               	.L70:
+ 563:usb_keyboard.c **** 					usb_send_in();
+ 564:usb_keyboard.c **** 					return;
+ 565:usb_keyboard.c **** 				}
+ 566:usb_keyboard.c **** 			}
+ 567:usb_keyboard.c **** 			if (bmRequestType == 0x21) {
+ 980               		.loc 1 567 0
+ 981 0254 9132      		cpi r25,lo8(33)
+ 982 0256 01F4      		brne .L44
+ 568:usb_keyboard.c **** 				if (bRequest == HID_SET_REPORT) {
+ 983               		.loc 1 568 0
+ 984 0258 8930      		cpi r24,lo8(9)
+ 985 025a 01F4      		brne .L74
+ 986               	.LVL100:
+ 987               	.L75:
+ 988               	.LBB92:
+ 989               	.LBB93:
+ 397:usb_keyboard.c **** }
+ 990               		.loc 1 397 0
+ 991 025c 8091 E800 		lds r24,232
+ 992 0260 82FF      		sbrs r24,2
+ 993 0262 00C0      		rjmp .L75
+ 994               	.LBE93:
+ 995               	.LBE92:
+ 569:usb_keyboard.c **** 					usb_wait_receive_out();
+ 570:usb_keyboard.c **** 					keyboard_leds = UEDATX;
+ 996               		.loc 1 570 0
+ 997 0264 8091 F100 		lds r24,241
+ 998 0268 8093 0000 		sts keyboard_leds,r24
+ 999               	.LBB94:
+ 1000               	.LBB95:
+ 401:usb_keyboard.c **** }
+ 1001               		.loc 1 401 0
+ 1002 026c 8BEF      		ldi r24,lo8(-5)
+ 1003 026e 8093 E800 		sts 232,r24
+ 1004 0272 00C0      		rjmp .L94
+ 1005               	.LVL101:
+ 1006               	.L74:
+ 1007               	.LBE95:
+ 1008               	.LBE94:
+ 571:usb_keyboard.c **** 					usb_ack_out();
+ 572:usb_keyboard.c **** 					usb_send_in();
+ 573:usb_keyboard.c **** 					return;
+ 574:usb_keyboard.c **** 				}
+ 575:usb_keyboard.c **** 				if (bRequest == HID_SET_IDLE) {
+ 1009               		.loc 1 575 0
+ 1010 0274 8A30      		cpi r24,lo8(10)
+ 1011 0276 01F4      		brne .L76
+ 576:usb_keyboard.c **** 					keyboard_idle_config = (wValue >> 8);
+ 1012               		.loc 1 576 0
+ 1013 0278 1093 0000 		sts keyboard_idle_config,r17
+ 577:usb_keyboard.c **** 					keyboard_idle_count = 0;
+ 1014               		.loc 1 577 0
+ 1015 027c 1092 0000 		sts keyboard_idle_count,__zero_reg__
+ 1016 0280 00C0      		rjmp .L94
+ 1017               	.L76:
+ 578:usb_keyboard.c **** 					usb_send_in();
+ 579:usb_keyboard.c **** 					return;
+ 580:usb_keyboard.c **** 				}
+ 581:usb_keyboard.c **** 				if (bRequest == HID_SET_PROTOCOL) {
+ 1018               		.loc 1 581 0
+ 1019 0282 8B30      		cpi r24,lo8(11)
+ 1020 0284 01F4      		brne .L44
+ 582:usb_keyboard.c **** 					keyboard_protocol = wValue;
+ 1021               		.loc 1 582 0
+ 1022 0286 0093 0000 		sts keyboard_protocol,r16
+ 1023               	.LVL102:
+ 1024               	.L94:
+ 1025               	.LBB96:
+ 1026               	.LBB97:
+ 393:usb_keyboard.c **** }
+ 1027               		.loc 1 393 0
+ 1028 028a 8EEF      		ldi r24,lo8(-2)
+ 1029 028c 8093 E800 		sts 232,r24
+ 1030 0290 00C0      		rjmp .L43
+ 1031               	.LVL103:
+ 1032               	.L44:
+ 1033               	.LBE97:
+ 1034               	.LBE96:
+ 583:usb_keyboard.c **** 					usb_send_in();
+ 584:usb_keyboard.c **** 					return;
+ 585:usb_keyboard.c **** 				}
+ 586:usb_keyboard.c **** 			}
+ 587:usb_keyboard.c **** 		}
+ 588:usb_keyboard.c **** 	}
+ 589:usb_keyboard.c **** 	UECONX = (1<<STALLRQ) | (1<<EPEN);	// stall
+ 1035               		.loc 1 589 0
+ 1036 0292 81E2      		ldi r24,lo8(33)
+ 1037 0294 8093 EB00 		sts 235,r24
+ 1038               	.L43:
+ 1039               	/* epilogue start */
+ 590:usb_keyboard.c **** }
+ 1040               		.loc 1 590 0
+ 1041 0298 0F90      		pop __tmp_reg__
+ 1042 029a DF91      		pop r29
+ 1043 029c CF91      		pop r28
+ 1044 029e FF91      		pop r31
+ 1045 02a0 EF91      		pop r30
+ 1046 02a2 BF91      		pop r27
+ 1047 02a4 AF91      		pop r26
+ 1048 02a6 9F91      		pop r25
+ 1049 02a8 8F91      		pop r24
+ 1050 02aa 7F91      		pop r23
+ 1051 02ac 6F91      		pop r22
+ 1052 02ae 5F91      		pop r21
+ 1053 02b0 4F91      		pop r20
+ 1054 02b2 3F91      		pop r19
+ 1055 02b4 2F91      		pop r18
+ 1056 02b6 1F91      		pop r17
+ 1057 02b8 0F91      		pop r16
+ 1058 02ba FF90      		pop r15
+ 1059 02bc EF90      		pop r14
+ 1060 02be 0F90      		pop r0
+ 1061 02c0 0FBE      		out __SREG__,r0
+ 1062 02c2 0F90      		pop r0
+ 1063 02c4 1F90      		pop r1
+ 1064 02c6 1895      		reti
+ 1065               		.cfi_endproc
+ 1066               	.LFE10:
+ 1068               		.local	div4.1828
+ 1069               		.comm	div4.1828,1,1
+ 1070               	.global	keyboard_leds
+ 1071               		.section .bss
+ 1074               	keyboard_leds:
+ 1075 0000 00        		.zero	1
+ 1076               		.local	keyboard_idle_count
+ 1077               		.comm	keyboard_idle_count,1,1
+ 1078               		.data
+ 1081               	keyboard_idle_config:
+ 1082 0000 7D        		.byte	125
+ 1085               	keyboard_protocol:
+ 1086 0001 01        		.byte	1
+ 1087               	.global	keyboard_keys
+ 1088               		.section .bss
+ 1091               	keyboard_keys:
+ 1092 0001 0000 0000 		.zero	6
+ 1092      0000 
+ 1093               	.global	keyboard_modifier_keys
+ 1096               	keyboard_modifier_keys:
+ 1097 0007 00        		.zero	1
+ 1098               		.local	usb_configuration
+ 1099               		.comm	usb_configuration,1,1
+ 1100               		.section	.progmem.data,"a",@progbits
+ 1103               	descriptor_list:
+ 1104 0000 0001      		.word	256
+ 1105 0002 0000      		.word	0
+ 1106 0004 0000      		.word	device_descriptor
+ 1107 0006 12        		.byte	18
+ 1108 0007 0002      		.word	512
+ 1109 0009 0000      		.word	0
+ 1110 000b 0000      		.word	config1_descriptor
+ 1111 000d 22        		.byte	34
+ 1112 000e 0022      		.word	8704
+ 1113 0010 0000      		.word	0
+ 1114 0012 0000      		.word	keyboard_hid_report_desc
+ 1115 0014 3F        		.byte	63
+ 1116 0015 0021      		.word	8448
+ 1117 0017 0000      		.word	0
+ 1118 0019 0000      		.word	config1_descriptor+18
+ 1119 001b 09        		.byte	9
+ 1120 001c 0003      		.word	768
+ 1121 001e 0000      		.word	0
+ 1122 0020 0000      		.word	string0
+ 1123 0022 04        		.byte	4
+ 1124 0023 0103      		.word	769
+ 1125 0025 0904      		.word	1033
+ 1126 0027 0000      		.word	string1
+ 1127 0029 10        		.byte	16
+ 1128 002a 0203      		.word	770
+ 1129 002c 0904      		.word	1033
+ 1130 002e 0000      		.word	string2
+ 1131 0030 12        		.byte	18
+ 1134               	string2:
+ 1135 0031 12        		.byte	18
+ 1136 0032 03        		.byte	3
+ 1137 0033 4B00      		.string	"K"
+ 1138 0035 6500      		.string	"e"
+ 1139 0037 7900      		.string	"y"
+ 1140 0039 6200      		.string	"b"
+ 1141 003b 6F00      		.string	"o"
+ 1142 003d 6100      		.string	"a"
+ 1143 003f 7200      		.string	"r"
+ 1144 0041 6400      		.string	"d"
+ 1145 0043 00        		.string	""
+ 1146 0044 00        		.string	""
+ 1149               	string1:
+ 1150 0045 10        		.byte	16
+ 1151 0046 03        		.byte	3
+ 1152 0047 4D00      		.string	"M"
+ 1153 0049 6600      		.string	"f"
+ 1154 004b 6700      		.string	"g"
+ 1155 004d 4E00      		.string	"N"
+ 1156 004f 6100      		.string	"a"
+ 1157 0051 6D00      		.string	"m"
+ 1158 0053 6500      		.string	"e"
+ 1159 0055 00        		.string	""
+ 1160 0056 00        		.string	""
+ 1163               	string0:
+ 1164 0057 04        		.byte	4
+ 1165 0058 03        		.byte	3
+ 1166 0059 0904      		.word	1033
+ 1169               	config1_descriptor:
+ 1170 005b 09        		.byte	9
+ 1171 005c 02        		.byte	2
+ 1172 005d 22        		.byte	34
+ 1173 005e 00        		.byte	0
+ 1174 005f 01        		.byte	1
+ 1175 0060 01        		.byte	1
+ 1176 0061 00        		.byte	0
+ 1177 0062 C0        		.byte	-64
+ 1178 0063 32        		.byte	50
+ 1179 0064 09        		.byte	9
+ 1180 0065 04        		.byte	4
+ 1181 0066 00        		.byte	0
+ 1182 0067 00        		.byte	0
+ 1183 0068 01        		.byte	1
+ 1184 0069 03        		.byte	3
+ 1185 006a 01        		.byte	1
+ 1186 006b 01        		.byte	1
+ 1187 006c 00        		.byte	0
+ 1188 006d 09        		.byte	9
+ 1189 006e 21        		.byte	33
+ 1190 006f 11        		.byte	17
+ 1191 0070 01        		.byte	1
+ 1192 0071 00        		.byte	0
+ 1193 0072 01        		.byte	1
+ 1194 0073 22        		.byte	34
+ 1195 0074 3F        		.byte	63
+ 1196 0075 00        		.byte	0
+ 1197 0076 07        		.byte	7
+ 1198 0077 05        		.byte	5
+ 1199 0078 83        		.byte	-125
+ 1200 0079 03        		.byte	3
+ 1201 007a 08        		.byte	8
+ 1202 007b 00        		.byte	0
+ 1203 007c 01        		.byte	1
+ 1206               	keyboard_hid_report_desc:
+ 1207 007d 05        		.byte	5
+ 1208 007e 01        		.byte	1
+ 1209 007f 09        		.byte	9
+ 1210 0080 06        		.byte	6
+ 1211 0081 A1        		.byte	-95
+ 1212 0082 01        		.byte	1
+ 1213 0083 75        		.byte	117
+ 1214 0084 01        		.byte	1
+ 1215 0085 95        		.byte	-107
+ 1216 0086 08        		.byte	8
+ 1217 0087 05        		.byte	5
+ 1218 0088 07        		.byte	7
+ 1219 0089 19        		.byte	25
+ 1220 008a E0        		.byte	-32
+ 1221 008b 29        		.byte	41
+ 1222 008c E7        		.byte	-25
+ 1223 008d 15        		.byte	21
+ 1224 008e 00        		.byte	0
+ 1225 008f 25        		.byte	37
+ 1226 0090 01        		.byte	1
+ 1227 0091 81        		.byte	-127
+ 1228 0092 02        		.byte	2
+ 1229 0093 95        		.byte	-107
+ 1230 0094 01        		.byte	1
+ 1231 0095 75        		.byte	117
+ 1232 0096 08        		.byte	8
+ 1233 0097 81        		.byte	-127
+ 1234 0098 03        		.byte	3
+ 1235 0099 95        		.byte	-107
+ 1236 009a 05        		.byte	5
+ 1237 009b 75        		.byte	117
+ 1238 009c 01        		.byte	1
+ 1239 009d 05        		.byte	5
+ 1240 009e 08        		.byte	8
+ 1241 009f 19        		.byte	25
+ 1242 00a0 01        		.byte	1
+ 1243 00a1 29        		.byte	41
+ 1244 00a2 05        		.byte	5
+ 1245 00a3 91        		.byte	-111
+ 1246 00a4 02        		.byte	2
+ 1247 00a5 95        		.byte	-107
+ 1248 00a6 01        		.byte	1
+ 1249 00a7 75        		.byte	117
+ 1250 00a8 03        		.byte	3
+ 1251 00a9 91        		.byte	-111
+ 1252 00aa 03        		.byte	3
+ 1253 00ab 95        		.byte	-107
+ 1254 00ac 06        		.byte	6
+ 1255 00ad 75        		.byte	117
+ 1256 00ae 08        		.byte	8
+ 1257 00af 15        		.byte	21
+ 1258 00b0 00        		.byte	0
+ 1259 00b1 25        		.byte	37
+ 1260 00b2 68        		.byte	104
+ 1261 00b3 05        		.byte	5
+ 1262 00b4 07        		.byte	7
+ 1263 00b5 19        		.byte	25
+ 1264 00b6 00        		.byte	0
+ 1265 00b7 29        		.byte	41
+ 1266 00b8 68        		.byte	104
+ 1267 00b9 81        		.byte	-127
+ 1268 00ba 00        		.byte	0
+ 1269 00bb C0        		.byte	-64
+ 1272               	device_descriptor:
+ 1273 00bc 12        		.byte	18
+ 1274 00bd 01        		.byte	1
+ 1275 00be 00        		.byte	0
+ 1276 00bf 02        		.byte	2
+ 1277 00c0 00        		.byte	0
+ 1278 00c1 00        		.byte	0
+ 1279 00c2 00        		.byte	0
+ 1280 00c3 20        		.byte	32
+ 1281 00c4 C0        		.byte	-64
+ 1282 00c5 16        		.byte	22
+ 1283 00c6 7C        		.byte	124
+ 1284 00c7 04        		.byte	4
+ 1285 00c8 00        		.byte	0
+ 1286 00c9 01        		.byte	1
+ 1287 00ca 01        		.byte	1
+ 1288 00cb 02        		.byte	2
+ 1289 00cc 00        		.byte	0
+ 1290 00cd 01        		.byte	1
+ 1293               	endpoint_config_table:
+ 1294 00ce 00        		.byte	0
+ 1295 00cf 00        		.byte	0
+ 1296 00d0 01        		.byte	1
+ 1297 00d1 C1        		.byte	-63
+ 1298 00d2 06        		.byte	6
+ 1299 00d3 00        		.byte	0
+ 1300               		.text
+ 1301               	.Letext0:
+ 1302               		.file 2 "/usr/avr/include/stdint.h"
+DEFINED SYMBOLS
+                            *ABS*:0000000000000000 usb_keyboard.c
+     /tmp/ccF41Lmp.s:2      *ABS*:000000000000003e __SP_H__
+     /tmp/ccF41Lmp.s:3      *ABS*:000000000000003d __SP_L__
+     /tmp/ccF41Lmp.s:4      *ABS*:000000000000003f __SREG__
+     /tmp/ccF41Lmp.s:5      *ABS*:0000000000000000 __tmp_reg__
+     /tmp/ccF41Lmp.s:6      *ABS*:0000000000000001 __zero_reg__
+     /tmp/ccF41Lmp.s:12     .text.usb_wait_in_ready:0000000000000000 usb_wait_in_ready
+     /tmp/ccF41Lmp.s:35     .text.usb_init:0000000000000000 usb_init
+     /tmp/ccF41Lmp.s:1077   .bss:000000000000000a usb_configuration
+     /tmp/ccF41Lmp.s:80     .text.usb_configured:0000000000000000 usb_configured
+     /tmp/ccF41Lmp.s:98     .text.usb_keyboard_send:0000000000000000 usb_keyboard_send
+     /tmp/ccF41Lmp.s:1096   .bss:0000000000000007 keyboard_modifier_keys
+     /tmp/ccF41Lmp.s:1091   .bss:0000000000000001 keyboard_keys
+     /tmp/ccF41Lmp.s:1069   .bss:0000000000000009 keyboard_idle_count
+     /tmp/ccF41Lmp.s:201    .text.usb_keyboard_press:0000000000000000 usb_keyboard_press
+     /tmp/ccF41Lmp.s:236    .text.__vector_10:0000000000000000 __vector_10
+     /tmp/ccF41Lmp.s:1081   .data:0000000000000000 keyboard_idle_config
+                             .bss:0000000000000008 div4.1828
+     /tmp/ccF41Lmp.s:372    .text.__vector_11:0000000000000000 __vector_11
+     /tmp/ccF41Lmp.s:1103   .progmem.data:0000000000000000 descriptor_list
+     /tmp/ccF41Lmp.s:1293   .progmem.data:00000000000000ce endpoint_config_table
+     /tmp/ccF41Lmp.s:1085   .data:0000000000000001 keyboard_protocol
+     /tmp/ccF41Lmp.s:1074   .bss:0000000000000000 keyboard_leds
+     /tmp/ccF41Lmp.s:1272   .progmem.data:00000000000000bc device_descriptor
+     /tmp/ccF41Lmp.s:1169   .progmem.data:000000000000005b config1_descriptor
+     /tmp/ccF41Lmp.s:1206   .progmem.data:000000000000007d keyboard_hid_report_desc
+     /tmp/ccF41Lmp.s:1163   .progmem.data:0000000000000057 string0
+     /tmp/ccF41Lmp.s:1149   .progmem.data:0000000000000045 string1
+     /tmp/ccF41Lmp.s:1134   .progmem.data:0000000000000031 string2
+
+UNDEFINED SYMBOLS
+__do_copy_data
+__do_clear_bss
